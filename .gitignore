@@ -1,0 +1,19 @@
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Runtime and secrets
+.env
+.env.*
+*.log
+
+# Generated
+dist/
+build/
+tmp/
+temp/
+
