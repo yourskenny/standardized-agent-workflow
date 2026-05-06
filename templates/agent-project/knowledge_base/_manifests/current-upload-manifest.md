@@ -14,9 +14,11 @@
 - `examples/`
 - `knowledge_base/_templates/`
 - `knowledge_base/_manifests/`
+- `knowledge_base/_pre_ingestion/`
 - `knowledge_base/archive/`
 - `scripts/`
 - `PROJECT_BRIEF.md`
+- 原始资料、逐份摘要、入库前候选条目、个人作品或敏感材料。
 
 ## 同步记录
 

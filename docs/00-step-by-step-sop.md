@@ -43,6 +43,8 @@ my-agent-project/PROJECT_BRIEF.md
 
 ## 第 4 步：整理核心事实
 
+如果资料有价值但不适合直接公开，例如历史作品、内部案例、会议纪要或带个人表达的材料，先按 [07-pre-ingestion-abstraction-workflow.md](07-pre-ingestion-abstraction-workflow.md) 放入 `_pre_ingestion/` 抽象和审核。不要把原始资料或逐份摘要直接上传。
+
 复制：
 
 ```text

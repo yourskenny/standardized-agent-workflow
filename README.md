@@ -14,6 +14,7 @@
 
 ```text
 领域资料
+  -> 入库前抽象与审核
   -> 面向检索的知识库
   -> 元信息与风险分级
   -> 智能体行为协议
@@ -60,6 +61,7 @@
 5. [docs/04-agent-behavior-protocol.md](docs/04-agent-behavior-protocol.md)
 6. [docs/05-maintenance-and-regression-testing.md](docs/05-maintenance-and-regression-testing.md)
 7. [docs/06-from-course-agent-to-general-agent.md](docs/06-from-course-agent-to-general-agent.md)
+8. [docs/07-pre-ingestion-abstraction-workflow.md](docs/07-pre-ingestion-abstraction-workflow.md)
 
 ## 三层抽象
 
@@ -83,3 +85,4 @@
 - 用户口语化表达，能映射到正式资料。
 - 高风险问题，保守处理。
 - 维护者能看懂、能更新、能测试、能迁移。
+- 有价值但不适合直接公开的资料，先抽象、审核，再进入正式知识库。

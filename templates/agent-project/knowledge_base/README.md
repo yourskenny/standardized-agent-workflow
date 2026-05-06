@@ -8,6 +8,7 @@
 knowledge_base/
   _templates/
   _manifests/
+  _pre_ingestion/
   domain_specific/
     current/
   stable_materials/
@@ -22,5 +23,6 @@ knowledge_base/
 - `policy_and_boundaries/`：长期有效的边界、隐私、合规和拒答规则。
 - `_templates/`：维护者复制使用的模板，不上传。
 - `_manifests/`：上传清单，不上传。
+- `_pre_ingestion/`：入库前处理区，用于存放原始资料摘要、主题地图和候选条目，不上传。
 - `archive/`：历史版本归档，不与当前资料混传。
 

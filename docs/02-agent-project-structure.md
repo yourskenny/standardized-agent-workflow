@@ -15,6 +15,7 @@ agent-project/
   knowledge_base/
     _templates/
     _manifests/
+    _pre_ingestion/
     domain_specific/
       current/
     stable_materials/
@@ -62,6 +63,10 @@ agent-project/
 
 记录每次发布应上传哪些文件。清单本身不上传给用户端知识库。
 
+### `knowledge_base/_pre_ingestion/`
+
+保存入库前处理材料，例如原始资料摘要、主题地图和候选知识条目。这个目录默认不上传。只有经过抽象和审核后移入正式知识库目录的条目，才可以进入上传清单。
+
 ### `knowledge_base/domain_specific/current/`
 
 存放当前版本、当前学期、当前业务周期会变化的资料。
@@ -108,5 +113,6 @@ current_product_docs/
 
 - 如果文件回答“用户可以问什么、事实是什么、如何学习或操作”，通常可进入用户知识库。
 - 如果文件回答“维护者怎么上传、怎么测试、怎么更新”，只留在本地。
+- 如果文件来自历史作品、内部案例或敏感材料，先放入 `_pre_ingestion/`，抽象和审核后再决定是否进入正式知识库。
 - 如果文件包含个人资料、隐私、内部敏感信息，不进入任何公共知识库。
 
