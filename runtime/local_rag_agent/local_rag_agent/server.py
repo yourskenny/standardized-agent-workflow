@@ -14,6 +14,9 @@ def run_server(settings: Settings, port: int = 8765) -> None:
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/":
+                self._send_html(render_course_site_home())
+                return
+            if parsed.path in {"/chatbot", "/chatbot/"}:
                 self._send_html(render_chat_page("R 课程智能体（自建版）"))
                 return
             if parsed.path == "/api/chat":
@@ -219,6 +222,196 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
   </script>
 </body>
 </html>""".replace("__TITLE__", safe_title)
+
+
+def render_course_site_home() -> str:
+    return """<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>R 课程智能体与往届作品库</title>
+    <style>
+      :root {
+        --bg: #f7f8f5;
+        --panel: #ffffff;
+        --ink: #16201c;
+        --muted: #637067;
+        --line: #d9ded6;
+        --accent: #1f6f5b;
+        --accent-strong: #12483b;
+        --shadow: 0 18px 45px rgba(22, 32, 28, 0.08);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--bg);
+        font-family: "Inter", "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      a { color: inherit; }
+      .topbar {
+        align-items: center;
+        background: rgba(247, 248, 245, 0.94);
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        min-height: 64px;
+        padding: 0 32px;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      .brand { font-weight: 700; text-decoration: none; }
+      nav { display: flex; gap: 18px; }
+      nav a { color: var(--muted); font-size: 14px; text-decoration: none; }
+      .home-shell {
+        margin: 0 auto;
+        padding: 36px 0 56px;
+        width: min(1180px, calc(100vw - 40px));
+      }
+      .intro-panel,
+      .agent-panel,
+      .notice-panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+      }
+      .intro-panel {
+        display: flex;
+        gap: 28px;
+        justify-content: space-between;
+        padding: 34px;
+      }
+      .eyebrow {
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0;
+        margin: 0 0 8px;
+        text-transform: uppercase;
+      }
+      h1, h2, h3, p { overflow-wrap: anywhere; }
+      h1 { font-size: 34px; line-height: 1.18; margin: 0; }
+      h2 { font-size: 20px; line-height: 1.28; margin: 0; }
+      h3 { font-size: 17px; margin: 0 0 8px; }
+      .lead {
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.7;
+        max-width: 760px;
+      }
+      .quick-actions {
+        align-items: flex-start;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .primary-action,
+      .secondary-action {
+        align-items: center;
+        border-radius: 6px;
+        display: inline-flex;
+        font-size: 14px;
+        font-weight: 700;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 15px;
+        text-decoration: none;
+      }
+      .primary-action { background: var(--accent); color: white; }
+      .secondary-action { border: 1px solid var(--line); color: var(--accent-strong); }
+      .split-layout {
+        display: grid;
+        gap: 22px;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        margin-top: 22px;
+      }
+      .agent-panel,
+      .notice-panel { padding: 22px; }
+      .agent-frame {
+        background: #f1f4ef;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        height: 620px;
+        margin-top: 18px;
+        overflow: hidden;
+      }
+      .agent-frame iframe {
+        border: 0;
+        height: 100%;
+        width: 100%;
+      }
+      .check-list {
+        color: var(--muted);
+        line-height: 1.7;
+        margin: 16px 0 0;
+        padding-left: 18px;
+      }
+      @media (max-width: 900px) {
+        .intro-panel,
+        .split-layout { display: grid; grid-template-columns: 1fr; }
+      }
+      @media (max-width: 640px) {
+        .topbar { align-items: flex-start; flex-direction: column; gap: 10px; padding: 14px 20px; }
+        h1 { font-size: 27px; }
+        .home-shell { padding-top: 20px; width: min(100vw - 24px, 1180px); }
+        .intro-panel,
+        .agent-panel,
+        .notice-panel { padding: 18px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">R 课程助手</a>
+      <nav>
+        <a href="http://8.160.181.138:8097/reports.html" target="_blank" rel="noopener">往届作品</a>
+        <a href="http://8.160.181.138:8097/guide.html" target="_blank" rel="noopener">使用说明</a>
+      </nav>
+    </header>
+
+    <main class="home-shell">
+      <section class="intro-panel">
+        <div>
+          <p class="eyebrow">R 语言与数据可视化</p>
+          <h1>课程智能体与往届作品查阅入口</h1>
+          <p class="lead">左侧用于进入课程智能体，右侧可查阅往届课程报告与论文材料。往届材料供学习结构、选题和方法，不作为智能体检索依据。</p>
+        </div>
+        <div class="quick-actions">
+          <a class="primary-action" href="http://8.160.181.138:8097/reports.html" target="_blank" rel="noopener">浏览往届作品</a>
+          <a class="secondary-action" href="http://8.160.181.138:8097/guide.html" target="_blank" rel="noopener">查看使用边界</a>
+        </div>
+      </section>
+
+      <section class="split-layout">
+        <article class="agent-panel">
+          <div class="section-head">
+            <p class="eyebrow">Agent</p>
+            <h2>课程智能体</h2>
+          </div>
+          <div id="agentMount" class="agent-frame">
+            <iframe src="/chatbot" title="课程智能体"></iframe>
+          </div>
+        </article>
+
+        <aside class="notice-panel">
+          <div class="section-head">
+            <p class="eyebrow">Boundary</p>
+            <h2>资料使用边界</h2>
+          </div>
+          <ul class="check-list">
+            <li>学生可以直接查阅往届作品原件。</li>
+            <li>智能体不把往届作品全文作为回答依据。</li>
+            <li>智能体可以指导如何阅读范例、形成问题和组织报告。</li>
+            <li>不要复制、改写或仿写往届作品作为提交件。</li>
+          </ul>
+        </aside>
+      </section>
+    </main>
+  </body>
+</html>"""
 
 
 def escape_text(value: str) -> str:

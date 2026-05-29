@@ -11,7 +11,7 @@ from local_rag_agent.index_store import read_index
 from local_rag_agent.manifest import expand_manifest_entries, parse_manifest_entries
 from local_rag_agent.regression import parse_regression_questions
 from local_rag_agent.retrieval import rank_chunks
-from local_rag_agent.server import render_chat_page
+from local_rag_agent.server import render_chat_page, render_course_site_home
 
 
 class ConfigAndManifestTests(unittest.TestCase):
@@ -217,6 +217,14 @@ class RegressionTests(unittest.TestCase):
 
 
 class ServerPageTests(unittest.TestCase):
+    def test_render_course_site_home_matches_server_entry_structure(self):
+        page = render_course_site_home()
+
+        self.assertIn("R 课程智能体与往届作品库", page)
+        self.assertIn("课程智能体与往届作品查阅入口", page)
+        self.assertIn('src="/chatbot"', page)
+        self.assertIn("资料使用边界", page)
+
     def test_render_chat_page_contains_course_agent_demo_ui(self):
         page = render_chat_page("R 课程智能体（自建版）")
 
