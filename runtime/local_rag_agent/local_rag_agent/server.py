@@ -191,18 +191,18 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
     .assistant-content {
       color: #111827;
       font-size: 17px;
-      line-height: 1.48;
+      line-height: 1.34;
       overflow-wrap: anywhere;
       white-space: pre-wrap;
     }
     .assistant-content p {
-      margin: 0 0 10px;
+      margin: 0 0 6px;
     }
     .assistant-content ul {
-      margin: 0 0 14px;
-      padding-left: 24px;
+      margin: 0 0 8px;
+      padding-left: 22px;
     }
-    .assistant-content li { margin: 5px 0; }
+    .assistant-content li { margin: 2px 0; }
     .assistant-content code {
       background: #eef0f2;
       border-radius: 6px;
@@ -219,7 +219,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
     .bubble {
       border-radius: 16px;
       font-size: 16px;
-      line-height: 1.48;
+      line-height: 1.34;
       max-width: min(82%, 760px);
       padding: 12px 16px;
       white-space: pre-wrap;
@@ -350,7 +350,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       border-top: 1px solid #edf0f4;
       color: #344054;
       font-size: 15px;
-      line-height: 1.62;
+      line-height: 1.42;
       padding-top: 14px;
       white-space: pre-wrap;
     }

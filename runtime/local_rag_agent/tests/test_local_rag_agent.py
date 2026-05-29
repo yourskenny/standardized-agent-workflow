@@ -318,6 +318,8 @@ class ServerPageTests(unittest.TestCase):
         self.assertIn("knowledge-popover", page)
         self.assertIn("openSourcePopover", page)
         self.assertIn("source.content", page)
+        self.assertIn("line-height: 1.34", page)
+        self.assertIn("margin: 0 0 6px", page)
         self.assertIn("position: sticky", page)
         self.assertIn("overflow-y: auto", page)
         self.assertIn("conversationHistory", page)
