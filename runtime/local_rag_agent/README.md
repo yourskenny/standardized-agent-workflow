@@ -2,6 +2,8 @@
 
 This is a dependency-light reference implementation for running a standardized agent project without Dify. It is intentionally small: the first goal is to validate architecture, retrieval boundaries, source visibility, and regression evidence.
 
+Although the first validated project is an R course agent, this runtime is designed as a reusable local base for general agent projects. A project supplies its own prompt, upload manifest, knowledge base, regression questions, and runtime config. The runtime supplies ingestion, retrieval, model calls, source-backed UI, and test evidence.
+
 ## What It Replaces
 
 For local validation, this runtime replaces the core Dify path:
@@ -77,6 +79,34 @@ Open:
 http://127.0.0.1:8765
 ```
 
+## Reusing It For Another Agent Project
+
+For a new project, create a TOML file with the same shape as `examples/r-course-agent.toml`:
+
+```toml
+[project]
+prompt_path = "agent/system-prompt.md"
+knowledge_root = "knowledge_base"
+manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"
+index_path = ".local_rag_agent/index.json"
+
+[retrieval]
+chunk_size = 1200
+chunk_overlap = 160
+top_k = 5
+
+[regression]
+output_dir = ".local_rag_agent/regression"
+```
+
+Then run the same four commands:
+
+```text
+ingest -> chat -> serve -> regression
+```
+
+The runtime should not contain domain facts. Domain facts belong in the content project. Runtime changes should improve the general architecture: retrieval, prompt assembly, source display, model integration, tests, or deployment.
+
 ## Model Configuration
 
 If no model API key is set, `chat` returns a deterministic extractive answer based on the top retrieved source. This keeps the demo usable when model credentials or network access are unavailable. When a model API key is set, the runtime uses the same retrieved sources and system prompt to generate a more natural answer.
@@ -113,4 +143,5 @@ These files are local evidence and should not be committed to content repositori
 - The first retriever is lexical, transparent, and dependency-free.
 - The index is JSON, so maintainers can inspect exactly what was ingested.
 - The runtime reads the existing Dify upload manifest, which makes it a bridge rather than a separate content pipeline.
+- The browser UI shows clickable source chips and knowledge snippets, so demos can prove where an answer came from.
 - Later versions can replace retrieval with embeddings, Chroma, SQLite FTS, pgvector, or a remote vector database behind the same CLI shape.

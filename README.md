@@ -63,16 +63,24 @@
 7. [docs/06-from-course-agent-to-general-agent.md](docs/06-from-course-agent-to-general-agent.md)
 8. [docs/07-pre-ingestion-abstraction-workflow.md](docs/07-pre-ingestion-abstraction-workflow.md)
 9. [docs/08-local-rag-reference-implementation.md](docs/08-local-rag-reference-implementation.md)
+10. [docs/09-general-agent-runtime-architecture.md](docs/09-general-agent-runtime-architecture.md)
 
-## 本地自建 RAG 验证
+## 通用自建智能体运行时
 
-本仓库现在包含一个轻量级本地 RAG 参考实现：
+本仓库现在包含一个轻量级自建 RAG 运行时：
 
 ```text
 runtime/local_rag_agent/
 ```
 
-它可以读取现有智能体项目的上传清单和知识库文件，在本地生成 JSON 索引，并提供 `ingest`、`chat`、`serve`、`regression` 命令。第一个验证对象是 R 课程智能体，使用说明见 [runtime/local_rag_agent/README.md](runtime/local_rag_agent/README.md)。
+它可以读取任意符合模板结构的智能体项目：系统提示词、上传清单、Markdown 知识库和回归问题，在本地生成 JSON 索引，并提供 `ingest`、`chat`、`serve`、`regression` 命令。
+
+第一个验证对象是 R 课程智能体，但运行时本身不是课程专用代码。它的目标是成为通用智能体项目的本地验证和演示底座：同一套运行时，通过不同 TOML 配置和不同知识库，可以服务不同课程、内部助手或未来的营销智能体原型。
+
+使用说明见：
+
+- [runtime/local_rag_agent/README.md](runtime/local_rag_agent/README.md)
+- [docs/09-general-agent-runtime-architecture.md](docs/09-general-agent-runtime-architecture.md)
 
 ## 三层抽象
 
