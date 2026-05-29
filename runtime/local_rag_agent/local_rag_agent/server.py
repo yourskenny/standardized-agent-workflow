@@ -133,22 +133,21 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       padding: 26px 28px 8px;
       user-select: none;
     }
-    .powered {
+    .brand-mark {
       align-items: center;
       color: #667085;
       display: inline-flex;
       font-size: 13px;
-      gap: 7px;
+      gap: 9px;
       letter-spacing: 0;
       line-height: 1;
       white-space: nowrap;
     }
-    .dify-word {
-      color: #0b3fb3;
-      font-family: Georgia, "Times New Roman", serif;
-      font-size: 24px;
+    .brand-word {
+      color: #14532d;
+      font-size: 18px;
       font-weight: 800;
-      letter-spacing: -1px;
+      letter-spacing: 0;
     }
     .brand-divider {
       background: #e6e9ef;
@@ -186,30 +185,30 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       border-radius: 0 0 22px 22px;
       box-shadow: 0 14px 35px rgba(15, 23, 42, 0.035);
       margin: 0 auto;
-      padding: 34px 25px 14px;
+      padding: 24px 25px 14px;
       width: min(100%, 942px);
     }
     .assistant-content {
       color: #111827;
-      font-size: 21px;
-      line-height: 1.58;
+      font-size: 17px;
+      line-height: 1.48;
       overflow-wrap: anywhere;
       white-space: pre-wrap;
     }
     .assistant-content p {
-      margin: 0;
+      margin: 0 0 10px;
     }
     .assistant-content ul {
-      margin: 0 0 26px;
-      padding-left: 28px;
+      margin: 0 0 14px;
+      padding-left: 24px;
     }
-    .assistant-content li { margin: 10px 0; }
+    .assistant-content li { margin: 5px 0; }
     .assistant-content code {
       background: #eef0f2;
       border-radius: 6px;
       font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 17px;
-      padding: 2px 8px;
+      font-size: 14px;
+      padding: 1px 6px;
     }
     .message-row {
       display: flex;
@@ -219,10 +218,10 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
     .message-row.assistant { justify-content: center; }
     .bubble {
       border-radius: 16px;
-      font-size: 18px;
-      line-height: 1.58;
+      font-size: 16px;
+      line-height: 1.48;
       max-width: min(82%, 760px);
-      padding: 14px 18px;
+      padding: 12px 16px;
       white-space: pre-wrap;
       word-break: break-word;
     }
@@ -238,7 +237,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       width: min(100%, 942px);
     }
     .source-section {
-      margin-top: 22px;
+      margin-top: 14px;
     }
     .source-title {
       align-items: center;
@@ -276,6 +275,11 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    button.source-chip:hover,
+    button.source-more:hover {
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.10);
+      color: #344054;
+    }
     .source-icon {
       align-items: center;
       background: #2ea8ff;
@@ -296,6 +300,59 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       font-size: 16px;
       min-height: 37px;
       padding: 0 14px;
+    }
+    .knowledge-popover {
+      background: #fff;
+      border: 1px solid #edf0f4;
+      border-radius: 10px;
+      box-shadow: 0 22px 60px rgba(15, 23, 42, 0.18);
+      display: none;
+      left: 50%;
+      max-height: min(460px, 58vh);
+      max-width: min(640px, calc(100vw - 80px));
+      overflow: auto;
+      padding: 18px 22px;
+      position: fixed;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 560px;
+      z-index: 20;
+    }
+    .knowledge-popover.open { display: block; }
+    .popover-head {
+      align-items: start;
+      display: flex;
+      gap: 14px;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .popover-kicker {
+      color: #98a2b3;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .popover-title {
+      color: #344054;
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .popover-close {
+      background: #f2f4f7;
+      border: 0;
+      border-radius: 7px;
+      color: #667085;
+      flex: 0 0 auto;
+      height: 30px;
+      width: 30px;
+    }
+    .popover-content {
+      border-top: 1px solid #edf0f4;
+      color: #344054;
+      font-size: 15px;
+      line-height: 1.62;
+      padding-top: 14px;
+      white-space: pre-wrap;
     }
     .composer-panel {
       bottom: 24px;
@@ -328,7 +385,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
     }
     textarea::placeholder {
       color: #a0a7b4;
-      font-size: 20px;
+      font-size: 18px;
       font-weight: 600;
     }
     .send-button {
@@ -380,7 +437,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       .brand-strip { min-height: 54px; padding: 15px 16px 4px; }
       .chat-canvas { padding: 0 14px 16px; }
       .message-card { padding: 24px 18px 12px; }
-      .assistant-content { font-size: 18px; }
+      .assistant-content { font-size: 16px; }
       .bubble { max-width: 92%; }
       .composer-panel {
         bottom: 14px;
@@ -401,7 +458,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
 <body>
   <main class="dify-shell">
     <div class="brand-strip">
-      <div class="powered"><span>POWERED BY</span><span class="dify-word">Dify</span></div>
+      <div class="brand-mark"><span>SELF-BUILT AGENT</span><span class="brand-word">自主架构</span></div>
       <span class="brand-divider" aria-hidden="true"></span>
       <button id="clearChat" class="reset-button" type="button" aria-label="清空对话">
         <svg width="23" height="23" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -427,9 +484,9 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
           <div class="source-section">
             <div class="source-title">引用</div>
             <div class="source-list">
-              <span class="source-chip"><span class="source-icon">doc</span>introduction-to-R.md</span>
-              <span class="source-chip"><span class="source-icon">doc</span>使用tibble实现简单数据框.md</span>
-              <span class="source-chip"><span class="source-icon">doc</span>使用ggplot2进行数据可视化II.md</span>
+              <button class="source-chip" type="button" data-demo-source="introduction-to-R.md"><span class="source-icon">doc</span>introduction-to-R.md</button>
+              <button class="source-chip" type="button" data-demo-source="使用tibble实现简单数据框.md"><span class="source-icon">doc</span>使用tibble实现简单数据框.md</button>
+              <button class="source-chip" type="button" data-demo-source="使用ggplot2进行数据可视化II.md"><span class="source-icon">doc</span>使用ggplot2进行数据可视化II.md</button>
               <button class="source-more" type="button">+ 3</button>
             </div>
           </div>
@@ -448,6 +505,16 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
         <div id="statusLine" class="status-line"></div>
       </div>
     </section>
+    <div id="knowledgePopover" class="knowledge-popover" role="dialog" aria-modal="false" aria-label="知识库条目">
+      <div class="popover-head">
+        <div>
+          <div id="popoverKicker" class="popover-kicker"># 1</div>
+          <div id="popoverTitle" class="popover-title"></div>
+        </div>
+        <button id="popoverClose" class="popover-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div id="popoverContent" class="popover-content"></div>
+    </div>
   </main>
   <script>
     const chatCanvas = document.getElementById("chatCanvas");
@@ -455,6 +522,10 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
     const statusLine = document.getElementById("statusLine");
     const input = document.getElementById("questionInput");
     const sendButton = document.getElementById("sendButton");
+    const popover = document.getElementById("knowledgePopover");
+    const popoverKicker = document.getElementById("popoverKicker");
+    const popoverTitle = document.getElementById("popoverTitle");
+    const popoverContent = document.getElementById("popoverContent");
     const conversationHistory = [];
     let pendingBubble = null;
 
@@ -467,9 +538,23 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       chatCanvas.scrollTop = chatCanvas.scrollHeight;
     }
 
+    function closeSourcePopover() {
+      popover.classList.remove("open");
+    }
+
+    function openSourcePopover(source, index) {
+      popoverKicker.textContent = `# ${index + 1}`;
+      popoverTitle.textContent = source.title || source.source || `知识库条目 ${index + 1}`;
+      const metadata = source.source ? `来源：${source.source}\n\n` : "";
+      popoverContent.textContent = `${metadata}${source.content || "该来源没有返回可展示的片段内容。"}`;
+      popover.classList.add("open");
+    }
+
     function makeSourceChip(source, index) {
-      const chip = document.createElement("span");
+      const chip = document.createElement("button");
       chip.className = "source-chip";
+      chip.type = "button";
+      chip.addEventListener("click", () => openSourcePopover(source, index));
       const icon = document.createElement("span");
       icon.className = "source-icon";
       icon.textContent = "doc";
@@ -507,6 +592,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
           more.className = "source-more";
           more.type = "button";
           more.textContent = `+ ${sources.length - 3}`;
+          more.addEventListener("click", () => openSourcePopover(sources[3], 3));
           list.appendChild(more);
         }
         section.appendChild(title);
@@ -599,6 +685,20 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       setStatus("");
       input.focus();
       scrollToBottom();
+    });
+    document.getElementById("popoverClose").addEventListener("click", closeSourcePopover);
+    popover.addEventListener("click", (event) => event.stopPropagation());
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeSourcePopover();
+    });
+    document.querySelectorAll("[data-demo-source]").forEach((button, index) => {
+      button.addEventListener("click", () => {
+        openSourcePopover({
+          title: button.dataset.demoSource || button.textContent,
+          source: "示例欢迎语引用",
+          content: "这是欢迎语中的示例引用。真实问答返回后，点击引用会展示检索到的知识库片段。"
+        }, index);
+      });
     });
     input.focus();
   </script>

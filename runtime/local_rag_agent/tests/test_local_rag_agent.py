@@ -164,6 +164,7 @@ class AgentTests(unittest.TestCase):
 
             self.assertIn("上课时间是星期三上午", response["answer"])
             self.assertEqual(response["sources"][0]["source"], "course.md")
+            self.assertEqual(response["sources"][0]["content"], "上课时间是星期三上午。")
 
     def test_build_messages_keeps_recent_history_before_current_retrieval_context(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -307,11 +308,16 @@ class ServerPageTests(unittest.TestCase):
         self.assertNotIn("}}", page)
         self.assertIn("dify-shell", page)
         self.assertIn("brand-strip", page)
-        self.assertIn("POWERED BY", page)
-        self.assertIn("Dify", page)
+        self.assertIn("SELF-BUILT AGENT", page)
+        self.assertIn("自主架构", page)
+        self.assertNotIn("POWERED BY", page)
+        self.assertNotIn("dify-word", page)
         self.assertIn("chat-canvas", page)
         self.assertIn("message-list", page)
         self.assertIn("composer-panel", page)
+        self.assertIn("knowledge-popover", page)
+        self.assertIn("openSourcePopover", page)
+        self.assertIn("source.content", page)
         self.assertIn("position: sticky", page)
         self.assertIn("overflow-y: auto", page)
         self.assertIn("conversationHistory", page)

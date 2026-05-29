@@ -128,4 +128,5 @@ def _source_payload(chunk: dict[str, object]) -> dict[str, object]:
         "title": chunk.get("title", ""),
         "chunk_id": chunk.get("chunk_id", ""),
         "score": chunk.get("score", 0),
+        "content": chunk.get("content", ""),
     }
