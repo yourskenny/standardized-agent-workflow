@@ -84,320 +84,373 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>__TITLE__</title>
   <style>
-    :root {{
+    :root {
       color-scheme: light;
-      --bg: #f7f8fb;
+      --page: #f5f6f4;
+      --shell: #f6f7f7;
       --panel: #ffffff;
-      --ink: #101828;
+      --ink: #111827;
       --muted: #667085;
-      --line: #e4e7ec;
-      --soft: #f2f4f7;
-      --primary: #155eef;
-      --primary-strong: #0b4acb;
-      --user: #155eef;
-      --assistant: #ffffff;
+      --line: #e5e7eb;
+      --chip: #f3f4f6;
+      --blue: #2563eb;
+      --blue-strong: #1d4ed8;
       --danger: #b42318;
-      --shadow: 0 18px 45px rgba(16, 24, 40, 0.10);
-    }}
-    * {{ box-sizing: border-box; }}
-    html, body {{ height: 100%; }}
-    body {{
+      --shadow: 0 16px 45px rgba(15, 23, 42, 0.10);
+    }
+    * { box-sizing: border-box; }
+    html,
+    body { height: 100%; }
+    body {
       margin: 0;
-      background: var(--bg);
+      background: var(--page);
       color: var(--ink);
       font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
-      overflow: hidden;
-    }}
-    button, textarea {{ font: inherit; }}
-    .chat-layout {{
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 236px;
-      height: 100vh;
-      min-height: 0;
-      background: var(--bg);
-    }}
-    .conversation-pane {{
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr) auto;
-      min-width: 0;
-      min-height: 0;
-      background: #fcfcfd;
-    }}
-    .chat-header {{
-      align-items: center;
-      background: rgba(255, 255, 255, 0.96);
-      border-bottom: 1px solid var(--line);
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
-      gap: 12px;
-      min-height: 64px;
-      padding: 12px 18px;
-      z-index: 2;
-    }}
-    .avatar {{
-      align-items: center;
-      background: #e6f4f1;
-      border: 1px solid #c7e7df;
-      border-radius: 8px;
-      color: #176b5b;
-      display: inline-flex;
-      font-weight: 800;
-      height: 38px;
-      justify-content: center;
-      width: 38px;
-    }}
-    h1 {{
       font-size: 16px;
-      line-height: 1.25;
-      margin: 0;
-      overflow-wrap: anywhere;
-    }}
-    .subtitle {{
-      color: var(--muted);
-      font-size: 12px;
-      margin: 2px 0 0;
-    }}
-    .clear-button {{
-      background: transparent;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      color: var(--muted);
-      cursor: pointer;
-      min-height: 34px;
-      padding: 0 10px;
-    }}
-    .message-list {{
-      overflow-y: auto;
-      padding: 22px 18px 18px;
-      scroll-behavior: smooth;
-    }}
-    .welcome-card {{
-      background: var(--panel);
-      border: 1px solid var(--line);
+      line-height: 1.65;
+      overflow: hidden;
+    }
+    button,
+    textarea { font: inherit; }
+    button { cursor: pointer; }
+    .dify-shell {
+      background: var(--shell);
+      border: 1px solid #d9ded6;
       border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(16, 24, 40, 0.05);
-      margin: 0 auto 18px;
-      max-width: 720px;
-      padding: 18px;
-    }}
-    .welcome-card h2 {{
-      font-size: 17px;
-      margin: 0 0 8px;
-    }}
-    .welcome-card p {{
-      color: var(--muted);
-      margin: 0;
-    }}
-    .message-row {{
-      display: flex;
-      margin: 16px auto;
-      max-width: 760px;
-    }}
-    .message-row.user {{ justify-content: flex-end; }}
-    .message-row.assistant {{ justify-content: flex-start; }}
-    .bubble {{
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      box-shadow: 0 2px 10px rgba(16, 24, 40, 0.04);
-      max-width: min(86%, 680px);
-      padding: 12px 14px;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }}
-    .message-row.user .bubble {{
-      background: var(--user);
-      border-color: var(--user);
-      color: #fff;
-    }}
-    .message-row.assistant .bubble {{
-      background: var(--assistant);
-      color: var(--ink);
-    }}
-    .source-list {{
-      border-top: 1px solid var(--line);
-      display: grid;
-      gap: 6px;
-      margin-top: 10px;
-      padding-top: 10px;
-    }}
-    .source-chip {{
-      background: var(--soft);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      color: #475467;
-      font-size: 12px;
-      padding: 6px 8px;
-    }}
-    .composer-panel {{
-      background: rgba(255, 255, 255, 0.98);
-      border-top: 1px solid var(--line);
-      padding: 12px 18px 16px;
-    }}
-    .composer-inner {{
-      align-items: end;
-      background: var(--panel);
-      border: 1px solid #d0d5dd;
-      border-radius: 8px;
-      box-shadow: 0 8px 28px rgba(16, 24, 40, 0.08);
-      display: grid;
-      gap: 10px;
-      grid-template-columns: minmax(0, 1fr) auto;
-      margin: 0 auto;
-      max-width: 760px;
-      padding: 10px;
-    }}
-    textarea {{
-      border: 0;
-      color: var(--ink);
-      min-height: 48px;
-      max-height: 132px;
-      outline: 0;
-      padding: 4px 2px;
-      resize: none;
-      width: 100%;
-    }}
-    .send-button {{
-      align-items: center;
-      background: var(--primary);
-      border: 0;
-      border-radius: 6px;
-      color: #fff;
-      cursor: pointer;
-      display: inline-flex;
-      font-weight: 700;
-      justify-content: center;
-      min-height: 38px;
-      min-width: 64px;
-      padding: 0 14px;
-    }}
-    .send-button:disabled {{
-      background: #98a2b3;
-      cursor: default;
-    }}
-    .composer-hint {{
-      color: var(--muted);
-      font-size: 12px;
-      margin: 8px auto 0;
-      max-width: 760px;
-    }}
-    .side-panel {{
-      background: #ffffff;
-      border-left: 1px solid var(--line);
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
+      height: 100vh;
       min-height: 0;
-      padding: 18px;
-    }}
-    .side-panel h2 {{
-      font-size: 14px;
-      margin: 0;
-    }}
-    .side-note {{
-      color: var(--muted);
-      font-size: 12px;
-      margin: 6px 0 14px;
-    }}
-    .prompt-list {{
-      display: grid;
-      gap: 8px;
+      overflow: hidden;
+      position: relative;
+    }
+    .brand-strip {
+      align-items: center;
+      display: flex;
+      gap: 18px;
+      justify-content: flex-end;
+      min-height: 76px;
+      padding: 26px 28px 8px;
+      user-select: none;
+    }
+    .powered {
+      align-items: center;
+      color: #667085;
+      display: inline-flex;
+      font-size: 13px;
+      gap: 7px;
+      letter-spacing: 0;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .dify-word {
+      color: #0b3fb3;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -1px;
+    }
+    .brand-divider {
+      background: #e6e9ef;
+      height: 21px;
+      width: 1px;
+    }
+    .reset-button {
+      align-items: center;
+      background: transparent;
+      border: 0;
+      color: #667085;
+      display: inline-flex;
+      height: 28px;
+      justify-content: center;
+      padding: 0;
+      width: 28px;
+    }
+    .reset-button svg { display: block; }
+    .chat-canvas {
+      min-height: 0;
       overflow-y: auto;
-      padding-right: 2px;
-    }}
-    .prompt-button {{
-      background: #ffffff;
-      border: 1px solid var(--line);
-      border-radius: 8px;
+      padding: 0 44px 24px;
+      scroll-behavior: smooth;
+    }
+    .message-list {
+      display: grid;
+      gap: 28px;
+      margin: 0 auto;
+      max-width: 942px;
+      min-height: calc(100vh - 212px);
+      padding-bottom: 28px;
+    }
+    .message-card {
+      background: var(--panel);
+      border-radius: 0 0 22px 22px;
+      box-shadow: 0 14px 35px rgba(15, 23, 42, 0.035);
+      margin: 0 auto;
+      padding: 34px 25px 14px;
+      width: min(100%, 942px);
+    }
+    .assistant-content {
+      color: #111827;
+      font-size: 21px;
+      line-height: 1.58;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+    .assistant-content p {
+      margin: 0;
+    }
+    .assistant-content ul {
+      margin: 0 0 26px;
+      padding-left: 28px;
+    }
+    .assistant-content li { margin: 10px 0; }
+    .assistant-content code {
+      background: #eef0f2;
+      border-radius: 6px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 17px;
+      padding: 2px 8px;
+    }
+    .message-row {
+      display: flex;
+      width: 100%;
+    }
+    .message-row.user { justify-content: flex-end; }
+    .message-row.assistant { justify-content: center; }
+    .bubble {
+      border-radius: 16px;
+      font-size: 18px;
+      line-height: 1.58;
+      max-width: min(82%, 760px);
+      padding: 14px 18px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .message-row.user .bubble {
+      background: var(--blue);
+      color: #fff;
+      margin-right: 4px;
+    }
+    .message-row.assistant .bubble {
+      background: var(--panel);
+      box-shadow: 0 14px 35px rgba(15, 23, 42, 0.05);
       color: var(--ink);
-      cursor: pointer;
-      line-height: 1.45;
-      min-height: 42px;
-      padding: 9px 10px;
-      text-align: left;
-    }}
-    .prompt-button:hover {{
-      border-color: #b2ccff;
-      color: var(--primary-strong);
-    }}
-    .status-line {{
-      color: var(--muted);
-      font-size: 12px;
+      width: min(100%, 942px);
+    }
+    .source-section {
+      margin-top: 22px;
+    }
+    .source-title {
+      align-items: center;
+      color: #667085;
+      display: flex;
+      font-size: 16px;
+      gap: 10px;
+      margin: 0 0 12px;
+    }
+    .source-title::after {
+      background: #e5e7eb;
+      content: "";
+      flex: 1;
+      height: 1px;
+    }
+    .source-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .source-chip {
+      align-items: center;
+      background: #ffffff;
+      border: 0;
+      border-radius: 10px;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+      color: #667085;
+      display: inline-flex;
+      font-size: 15px;
+      gap: 8px;
+      max-width: 280px;
+      min-height: 37px;
+      overflow: hidden;
+      padding: 0 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .source-icon {
+      align-items: center;
+      background: #2ea8ff;
+      border-radius: 4px;
+      color: #fff;
+      display: inline-flex;
+      flex: 0 0 auto;
+      font-size: 10px;
+      height: 17px;
+      justify-content: center;
+      width: 17px;
+    }
+    .source-more {
+      background: #fff;
+      border-radius: 9px;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+      color: #667085;
+      font-size: 16px;
+      min-height: 37px;
+      padding: 0 14px;
+    }
+    .composer-panel {
+      bottom: 24px;
+      left: 24px;
+      position: sticky;
+      right: 24px;
+      z-index: 5;
+    }
+    .composer-inner {
+      align-items: center;
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 14px 35px rgba(15, 23, 42, 0.16);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 49px;
+      gap: 14px;
+      margin: 0 auto;
+      max-width: 1086px;
+      min-height: 76px;
+      padding: 14px 14px 14px 22px;
+    }
+    textarea {
+      border: 0;
+      color: var(--ink);
+      min-height: 38px;
+      max-height: 120px;
+      outline: 0;
+      resize: none;
+      width: 100%;
+    }
+    textarea::placeholder {
+      color: #a0a7b4;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .send-button {
+      align-items: center;
+      background: var(--blue);
+      border: 0;
+      border-radius: 12px;
+      color: #fff;
+      display: inline-flex;
+      height: 49px;
+      justify-content: center;
+      padding: 0;
+      width: 49px;
+    }
+    .send-button:hover { background: var(--blue-strong); }
+    .send-button:disabled {
+      background: #98a2b3;
+      cursor: default;
+    }
+    .status-line {
+      color: #667085;
+      font-size: 13px;
+      margin: 8px auto 0;
+      max-width: 1086px;
       min-height: 18px;
-    }}
-    .status-line.error {{ color: var(--danger); }}
-    .typing {{
+      padding-left: 4px;
+    }
+    .status-line.error { color: var(--danger); }
+    .typing {
       align-items: center;
       display: inline-flex;
-      gap: 4px;
-    }}
-    .typing span {{
+      gap: 6px;
+      min-height: 28px;
+    }
+    .typing span {
       animation: bounce 1s infinite ease-in-out;
       background: #98a2b3;
       border-radius: 999px;
-      height: 6px;
-      width: 6px;
-    }}
-    .typing span:nth-child(2) {{ animation-delay: 0.12s; }}
-    .typing span:nth-child(3) {{ animation-delay: 0.24s; }}
-    @keyframes bounce {{
-      0%, 80%, 100% {{ transform: translateY(0); opacity: .45; }}
-      40% {{ transform: translateY(-3px); opacity: 1; }}
-    }}
-    @media (max-width: 760px) {{
-      .chat-layout {{ grid-template-columns: 1fr; }}
-      .side-panel {{ display: none; }}
-      .bubble {{ max-width: 94%; }}
-      .chat-header {{ padding: 10px 12px; }}
-      .message-list {{ padding: 16px 12px; }}
-      .composer-panel {{ padding: 10px 12px 12px; }}
-    }}
+      height: 7px;
+      width: 7px;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.12s; }
+    .typing span:nth-child(3) { animation-delay: 0.24s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); opacity: .45; }
+      40% { transform: translateY(-4px); opacity: 1; }
+    }
+    @media (max-width: 900px) {
+      .brand-strip { min-height: 54px; padding: 15px 16px 4px; }
+      .chat-canvas { padding: 0 14px 16px; }
+      .message-card { padding: 24px 18px 12px; }
+      .assistant-content { font-size: 18px; }
+      .bubble { max-width: 92%; }
+      .composer-panel {
+        bottom: 14px;
+        left: 10px;
+        right: 10px;
+      }
+      .composer-inner {
+        min-height: 64px;
+        grid-template-columns: minmax(0, 1fr) 44px;
+      }
+      .send-button {
+        height: 44px;
+        width: 44px;
+      }
+    }
   </style>
 </head>
 <body>
-  <main class="chat-layout">
-    <section class="conversation-pane" aria-label="课程智能体对话窗口">
-      <header class="chat-header">
-        <div class="avatar" aria-hidden="true">R</div>
-        <div>
-          <h1>__TITLE__</h1>
-          <p class="subtitle">课程知识库 + 原提示词 + 本地自建 RAG 架构</p>
-        </div>
-        <button id="clearChat" class="clear-button" type="button">清空</button>
-      </header>
+  <main class="dify-shell">
+    <div class="brand-strip">
+      <div class="powered"><span>POWERED BY</span><span class="dify-word">Dify</span></div>
+      <span class="brand-divider" aria-hidden="true"></span>
+      <button id="clearChat" class="reset-button" type="button" aria-label="清空对话">
+        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M21 4v6h-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
 
+    <section id="chatCanvas" class="chat-canvas" aria-label="课程智能体对话窗口">
       <div id="messageList" class="message-list" aria-live="polite">
-        <div class="welcome-card">
-          <h2>你好，我是课程智能体</h2>
-          <p>可以问课程安排、师生会面时间、作业规则、R 学习路径和论文写作边界。当前窗口会保留上下文，追问时我会参考前面的对话。</p>
-        </div>
+        <article class="message-card" id="welcomeCard">
+          <div class="assistant-content">
+            <ul>
+              <li><strong>课程事务问题</strong>：解答上课时间、地点、教师联系方式、评分方式、阅读材料等课程信息。</li>
+              <li><strong>R 语言知识</strong>：讲解 R 语言基础语法、数据类型、tidyverse 核心包（如 <code>tibble</code>、<code>dplyr</code>、<code>ggplot2</code>）、R Markdown 等课程内容，并给出可运行的代码示例。</li>
+              <li><strong>课堂练习辅导</strong>：指导你完成课堂练习，提供结构建议和代码逻辑检查，帮助你提升练习质量。</li>
+              <li><strong>作业与论文参考</strong>：协助你缩小研究兴趣、拆解研究问题、设计分析方法、提供代码片段和论文结构建议，但不会代写完整作业或论文。</li>
+            </ul>
+            <p>你可以随时向我提问，无论是“这节课推荐读什么书”，还是“如何用 <code>dplyr</code> 筛选数据”，我都会根据课程知识库给出准确、具体的回答。如果有不确定的地方，我也会如实告知，并建议你向老师或助教确认。</p>
+            <p>期待与你一起学习 R 语言！有什么我可以帮你的？</p>
+          </div>
+          <div class="source-section">
+            <div class="source-title">引用</div>
+            <div class="source-list">
+              <span class="source-chip"><span class="source-icon">doc</span>introduction-to-R.md</span>
+              <span class="source-chip"><span class="source-icon">doc</span>使用tibble实现简单数据框.md</span>
+              <span class="source-chip"><span class="source-icon">doc</span>使用ggplot2进行数据可视化II.md</span>
+              <button class="source-more" type="button">+ 3</button>
+            </div>
+          </div>
+        </article>
       </div>
 
       <div class="composer-panel">
         <div class="composer-inner">
-          <textarea id="questionInput" rows="2" placeholder="向课程智能体提问，可以继续追问上下文">这门课的上课时间和地点是什么？</textarea>
-          <button id="sendButton" class="send-button" type="button">发送</button>
+          <textarea id="questionInput" rows="1" placeholder="和 R 课程智能体 聊天"></textarea>
+          <button id="sendButton" class="send-button" type="button" aria-label="发送">
+            <svg width="27" height="27" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 5.5 20 12 4 18.5v-5.2L13.5 12 4 10.7V5.5Z" fill="currentColor"/>
+            </svg>
+          </button>
         </div>
-        <div id="statusLine" class="composer-hint status-line">Enter 换行，Ctrl/⌘ + Enter 发送</div>
+        <div id="statusLine" class="status-line"></div>
       </div>
     </section>
-
-    <aside class="side-panel">
-      <div>
-        <h2>演示问题</h2>
-        <p class="side-note">点击后会进入同一个对话上下文。</p>
-      </div>
-      <div class="prompt-list">
-        <button class="prompt-button" data-q="这门课的上课时间和地点是什么？" type="button">上课时间和地点</button>
-        <button class="prompt-button" data-q="那老师什么时候可以答疑？" type="button">继续追问：答疑时间</button>
-        <button class="prompt-button" data-q="这门课有什么参考材料？" type="button">参考材料</button>
-        <button class="prompt-button" data-q="迟交政策是什么？" type="button">迟交政策</button>
-        <button class="prompt-button" data-q="我应该怎样阅读往届作品而不违规？" type="button">往届作品使用边界</button>
-        <button class="prompt-button" data-q="请直接帮我写完整论文。" type="button">论文代写边界</button>
-      </div>
-    </aside>
   </main>
   <script>
+    const chatCanvas = document.getElementById("chatCanvas");
     const messageList = document.getElementById("messageList");
     const statusLine = document.getElementById("statusLine");
     const input = document.getElementById("questionInput");
@@ -411,7 +464,21 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
     }
 
     function scrollToBottom() {
-      messageList.scrollTop = messageList.scrollHeight;
+      chatCanvas.scrollTop = chatCanvas.scrollHeight;
+    }
+
+    function makeSourceChip(source, index) {
+      const chip = document.createElement("span");
+      chip.className = "source-chip";
+      const icon = document.createElement("span");
+      icon.className = "source-icon";
+      icon.textContent = "doc";
+      const label = document.createElement("span");
+      const raw = source.title || source.source || `来源 ${index + 1}`;
+      label.textContent = raw.length > 30 ? `${raw.slice(0, 30)}...` : raw;
+      chip.appendChild(icon);
+      chip.appendChild(label);
+      return chip;
     }
 
     function addMessage(role, text, sources = []) {
@@ -420,19 +487,31 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
 
       const bubble = document.createElement("div");
       bubble.className = "bubble";
-      bubble.textContent = text;
 
-      if (sources.length) {
+      const content = document.createElement("div");
+      content.className = role === "assistant" ? "assistant-content" : "";
+      content.textContent = text;
+      bubble.appendChild(content);
+
+      if (role === "assistant" && sources.length) {
+        const section = document.createElement("div");
+        section.className = "source-section";
+        const title = document.createElement("div");
+        title.className = "source-title";
+        title.textContent = "引用";
         const list = document.createElement("div");
         list.className = "source-list";
-        sources.slice(0, 4).forEach((source, index) => {
-          const chip = document.createElement("div");
-          chip.className = "source-chip";
-          const title = source.title ? `${source.title} · ` : "";
-          chip.textContent = `${index + 1}. ${title}${source.source}`;
-          list.appendChild(chip);
-        });
-        bubble.appendChild(list);
+        sources.slice(0, 3).forEach((source, index) => list.appendChild(makeSourceChip(source, index)));
+        if (sources.length > 3) {
+          const more = document.createElement("button");
+          more.className = "source-more";
+          more.type = "button";
+          more.textContent = `+ ${sources.length - 3}`;
+          list.appendChild(more);
+        }
+        section.appendChild(title);
+        section.appendChild(list);
+        bubble.appendChild(section);
       }
 
       row.appendChild(bubble);
@@ -480,8 +559,8 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
 
       try {
         const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
           body: JSON.stringify({question, history: conversationHistory})
         });
         const data = await res.json();
@@ -492,7 +571,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
         addMessage("assistant", answer, data.sources || []);
         conversationHistory.push({role: "assistant", content: answer});
         trimHistory();
-        setStatus(data.mode === "model" ? "模型已回答，来源附在消息下方。" : "本地检索式回答，来源附在消息下方。");
+        setStatus("");
       } catch (error) {
         removeTyping();
         addMessage("assistant", "模型服务暂时没有正常返回。请检查本地服务的 API 配置后再试。");
@@ -505,21 +584,21 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
 
     sendButton.addEventListener("click", () => ask());
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         ask();
       }
     });
-    document.querySelectorAll("[data-q]").forEach(button => {
-      button.addEventListener("click", () => {
-        ask(button.dataset.q);
-      });
+    input.addEventListener("input", () => {
+      input.style.height = "auto";
+      input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
     });
     document.getElementById("clearChat").addEventListener("click", () => {
       conversationHistory.splice(0, conversationHistory.length);
       messageList.querySelectorAll(".message-row").forEach(node => node.remove());
-      setStatus("对话已清空。");
+      setStatus("");
       input.focus();
+      scrollToBottom();
     });
     input.focus();
   </script>
