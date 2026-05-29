@@ -1,0 +1,13 @@
+[project]
+prompt_path = "dify/app-prompt.md"
+knowledge_root = "knowledge_base"
+manifest_path = "knowledge_base/_manifests/dify-upload-manifest-2026-spring.md"
+index_path = ".local_rag_agent/index.json"
+
+[retrieval]
+chunk_size = 1200
+chunk_overlap = 160
+top_k = 5
+
+[regression]
+output_dir = ".local_rag_agent/regression"

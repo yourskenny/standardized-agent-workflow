@@ -16,4 +16,9 @@ dist/
 build/
 tmp/
 temp/
+.local_rag_agent/
+**/.local_rag_agent/
+*.jsonl
+__pycache__/
+*.pyc
 

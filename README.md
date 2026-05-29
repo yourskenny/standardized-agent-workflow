@@ -62,6 +62,17 @@
 6. [docs/05-maintenance-and-regression-testing.md](docs/05-maintenance-and-regression-testing.md)
 7. [docs/06-from-course-agent-to-general-agent.md](docs/06-from-course-agent-to-general-agent.md)
 8. [docs/07-pre-ingestion-abstraction-workflow.md](docs/07-pre-ingestion-abstraction-workflow.md)
+9. [docs/08-local-rag-reference-implementation.md](docs/08-local-rag-reference-implementation.md)
+
+## 本地自建 RAG 验证
+
+本仓库现在包含一个轻量级本地 RAG 参考实现：
+
+```text
+runtime/local_rag_agent/
+```
+
+它可以读取现有智能体项目的上传清单和知识库文件，在本地生成 JSON 索引，并提供 `ingest`、`chat`、`serve`、`regression` 命令。第一个验证对象是 R 课程智能体，使用说明见 [runtime/local_rag_agent/README.md](runtime/local_rag_agent/README.md)。
 
 ## 三层抽象
 
