@@ -3,9 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from local_rag_agent.agent import answer_question, build_extractive_answer
+from local_rag_agent.agent import answer_question, build_extractive_answer, build_messages
 from local_rag_agent.chunking import chunk_markdown
-from local_rag_agent.cli import configure_output_stream, demo_check, ingest_project
+from local_rag_agent.cli import build_retrieval_query, configure_output_stream, demo_check, ingest_project
 from local_rag_agent.config import Settings, load_settings
 from local_rag_agent.index_store import read_index
 from local_rag_agent.manifest import expand_manifest_entries, parse_manifest_entries
@@ -165,6 +165,77 @@ class AgentTests(unittest.TestCase):
             self.assertIn("上课时间是星期三上午", response["answer"])
             self.assertEqual(response["sources"][0]["source"], "course.md")
 
+    def test_build_messages_keeps_recent_history_before_current_retrieval_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("系统提示词", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+            chunks = [
+                {
+                    "content": "答：师生会面时间为星期一 16:45-17:30pm。",
+                    "source": "course.md",
+                    "title": "师生会面时间",
+                    "chunk_id": "course.md#0",
+                    "score": 9.0,
+                }
+            ]
+            history = [
+                {"role": "user", "content": "这门课的上课时间和地点是什么？"},
+                {"role": "assistant", "content": "课程在星期三上午 1-2 节上课。"},
+                {"role": "system", "content": "不要把这个放入对话历史。"},
+            ]
+
+            messages = build_messages(settings, "那老师什么时候可以答疑？", chunks, history=history)
+
+            self.assertEqual(messages[0]["role"], "system")
+            self.assertIn("系统提示词", messages[0]["content"])
+            self.assertEqual(messages[1], history[0])
+            self.assertEqual(messages[2], history[1])
+            self.assertNotIn("不要把这个放入对话历史", "\n".join(message["content"] for message in messages))
+            self.assertEqual(messages[-1]["role"], "user")
+            self.assertIn("检索片段", messages[-1]["content"])
+            self.assertIn("那老师什么时候可以答疑？", messages[-1]["content"])
+
+    def test_agent_passes_history_to_model_messages(self):
+        class FakeClient:
+            def __init__(self):
+                self.messages = []
+
+            def chat(self, messages):
+                self.messages = messages
+                return "模型回答"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("系统提示词", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+            client = FakeClient()
+
+            response = answer_question(
+                settings,
+                "那地点呢？",
+                [{"content": "答：地点为 1 区教 5-304。", "source": "course.md", "chunk_id": "course.md#0"}],
+                model_client=client,
+                history=[{"role": "user", "content": "这门课的上课时间是什么？"}],
+            )
+
+            self.assertEqual(response["answer"], "模型回答")
+            self.assertIn("这门课的上课时间是什么？", "\n".join(message["content"] for message in client.messages))
+
     def test_extractive_answer_prefers_answer_line_from_top_chunk(self):
         chunks = [
             {
@@ -232,6 +303,12 @@ class ServerPageTests(unittest.TestCase):
         self.assertIn("这门课的上课时间和地点是什么？", page)
         self.assertIn("/api/chat", page)
         self.assertIn("sources", page)
+        self.assertIn("chat-layout", page)
+        self.assertIn("message-list", page)
+        self.assertIn("composer-panel", page)
+        self.assertIn("overflow-y: auto", page)
+        self.assertIn("conversationHistory", page)
+        self.assertIn("history: conversationHistory", page)
 
 
 class CliWorkflowTests(unittest.TestCase):
@@ -250,6 +327,21 @@ class CliWorkflowTests(unittest.TestCase):
         configure_output_stream(stream)
 
         self.assertEqual(stream.calls, [{"encoding": "utf-8", "errors": "replace"}])
+
+    def test_build_retrieval_query_includes_recent_user_turns_for_followups(self):
+        query = build_retrieval_query(
+            "那地点呢？",
+            [
+                {"role": "user", "content": "这门课的上课时间是什么？"},
+                {"role": "assistant", "content": "星期三上午。"},
+                {"role": "user", "content": "老师什么时候答疑？"},
+            ],
+        )
+
+        self.assertIn("这门课的上课时间是什么？", query)
+        self.assertIn("老师什么时候答疑？", query)
+        self.assertIn("那地点呢？", query)
+        self.assertNotIn("星期三上午", query)
 
     def test_ingest_project_writes_index_from_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:

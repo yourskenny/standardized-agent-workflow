@@ -37,8 +37,14 @@ class OpenAICompatibleClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
+            detail = _redact_secret(error.read().decode("utf-8", errors="replace"), self.api_key)
             raise RuntimeError(f"Model request failed with HTTP {error.code}: {detail}") from error
         except urllib.error.URLError as error:
             raise RuntimeError(f"Model request failed: {error.reason}") from error
         return data["choices"][0]["message"]["content"]
+
+
+def _redact_secret(text: str, secret: str) -> str:
+    if secret and secret in text:
+        return text.replace(secret, "[redacted]")
+    return text

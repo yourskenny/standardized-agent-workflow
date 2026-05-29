@@ -21,7 +21,7 @@ def run_server(settings: Settings, port: int = 8765) -> None:
                 return
             if parsed.path == "/api/chat":
                 question = parse_qs(parsed.query).get("q", [""])[0]
-                self._send_json(chat_question(settings, question))
+                self._send_chat_response(lambda: chat_question(settings, question))
                 return
             self.send_error(404)
 
@@ -32,7 +32,10 @@ def run_server(settings: Settings, port: int = 8765) -> None:
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length).decode("utf-8")
             data = json.loads(body) if body else {}
-            self._send_json(chat_question(settings, str(data.get("question", ""))))
+            history = data.get("history", [])
+            if not isinstance(history, list):
+                history = []
+            self._send_chat_response(lambda: chat_question(settings, str(data.get("question", "")), history=history))
 
         def log_message(self, format: str, *args: object) -> None:
             return
@@ -40,6 +43,20 @@ def run_server(settings: Settings, port: int = 8765) -> None:
         def _send_json(self, payload: dict[str, object]) -> None:
             body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_chat_response(self, callback: object) -> None:
+            try:
+                payload = callback()  # type: ignore[operator]
+                status = 200
+            except Exception as error:  # pragma: no cover - real model failures are integration-only
+                payload = {"error": str(error), "answer": "", "sources": [], "mode": "error"}
+                status = 502
+            body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -67,158 +84,444 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>__TITLE__</title>
   <style>
-    :root {{ color-scheme: light; }}
+    :root {{
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --ink: #101828;
+      --muted: #667085;
+      --line: #e4e7ec;
+      --soft: #f2f4f7;
+      --primary: #155eef;
+      --primary-strong: #0b4acb;
+      --user: #155eef;
+      --assistant: #ffffff;
+      --danger: #b42318;
+      --shadow: 0 18px 45px rgba(16, 24, 40, 0.10);
+    }}
     * {{ box-sizing: border-box; }}
+    html, body {{ height: 100%; }}
     body {{
       margin: 0;
-      background: #f6f7f9;
-      color: #17202a;
+      background: var(--bg);
+      color: var(--ink);
       font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-      line-height: 1.6;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
     }}
-    header {{
-      background: #ffffff;
-      border-bottom: 1px solid #e5e8ec;
-      padding: 18px 28px;
-    }}
-    main {{
+    button, textarea {{ font: inherit; }}
+    .chat-layout {{
       display: grid;
-      gap: 20px;
-      grid-template-columns: minmax(0, 1fr) 280px;
-      margin: 0 auto;
-      max-width: 1120px;
-      padding: 22px;
+      grid-template-columns: minmax(0, 1fr) 236px;
+      height: 100vh;
+      min-height: 0;
+      background: var(--bg);
     }}
-    h1 {{ font-size: 22px; margin: 0; }}
-    .subtitle {{ color: #65717f; margin: 4px 0 0; }}
-    .chat-shell, .side {{
-      background: #ffffff;
-      border: 1px solid #e5e8ec;
+    .conversation-pane {{
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      min-width: 0;
+      min-height: 0;
+      background: #fcfcfd;
+    }}
+    .chat-header {{
+      align-items: center;
+      background: rgba(255, 255, 255, 0.96);
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 12px;
+      min-height: 64px;
+      padding: 12px 18px;
+      z-index: 2;
+    }}
+    .avatar {{
+      align-items: center;
+      background: #e6f4f1;
+      border: 1px solid #c7e7df;
       border-radius: 8px;
-      min-height: 180px;
+      color: #176b5b;
+      display: inline-flex;
+      font-weight: 800;
+      height: 38px;
+      justify-content: center;
+      width: 38px;
     }}
-    .messages {{ min-height: 430px; padding: 20px; }}
-    .message {{ border-radius: 8px; margin-bottom: 14px; max-width: 88%; padding: 12px 14px; }}
-    .assistant {{ background: #f0f4f8; }}
-    .user {{ background: #1f6feb; color: white; margin-left: auto; }}
-    .composer {{
-      border-top: 1px solid #e5e8ec;
+    h1 {{
+      font-size: 16px;
+      line-height: 1.25;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }}
+    .subtitle {{
+      color: var(--muted);
+      font-size: 12px;
+      margin: 2px 0 0;
+    }}
+    .clear-button {{
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      cursor: pointer;
+      min-height: 34px;
+      padding: 0 10px;
+    }}
+    .message-list {{
+      overflow-y: auto;
+      padding: 22px 18px 18px;
+      scroll-behavior: smooth;
+    }}
+    .welcome-card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(16, 24, 40, 0.05);
+      margin: 0 auto 18px;
+      max-width: 720px;
+      padding: 18px;
+    }}
+    .welcome-card h2 {{
+      font-size: 17px;
+      margin: 0 0 8px;
+    }}
+    .welcome-card p {{
+      color: var(--muted);
+      margin: 0;
+    }}
+    .message-row {{
+      display: flex;
+      margin: 16px auto;
+      max-width: 760px;
+    }}
+    .message-row.user {{ justify-content: flex-end; }}
+    .message-row.assistant {{ justify-content: flex-start; }}
+    .bubble {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(16, 24, 40, 0.04);
+      max-width: min(86%, 680px);
+      padding: 12px 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+    .message-row.user .bubble {{
+      background: var(--user);
+      border-color: var(--user);
+      color: #fff;
+    }}
+    .message-row.assistant .bubble {{
+      background: var(--assistant);
+      color: var(--ink);
+    }}
+    .source-list {{
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      padding-top: 10px;
+    }}
+    .source-chip {{
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: #475467;
+      font-size: 12px;
+      padding: 6px 8px;
+    }}
+    .composer-panel {{
+      background: rgba(255, 255, 255, 0.98);
+      border-top: 1px solid var(--line);
+      padding: 12px 18px 16px;
+    }}
+    .composer-inner {{
+      align-items: end;
+      background: var(--panel);
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      box-shadow: 0 8px 28px rgba(16, 24, 40, 0.08);
       display: grid;
       gap: 10px;
-      grid-template-columns: 1fr auto;
-      padding: 14px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      margin: 0 auto;
+      max-width: 760px;
+      padding: 10px;
     }}
     textarea {{
-      border: 1px solid #ccd3db;
-      border-radius: 8px;
-      font: inherit;
-      min-height: 56px;
-      padding: 10px 12px;
-      resize: vertical;
+      border: 0;
+      color: var(--ink);
+      min-height: 48px;
+      max-height: 132px;
+      outline: 0;
+      padding: 4px 2px;
+      resize: none;
       width: 100%;
     }}
-    button {{
-      background: #1f6feb;
+    .send-button {{
+      align-items: center;
+      background: var(--primary);
       border: 0;
-      border-radius: 8px;
+      border-radius: 6px;
       color: #fff;
       cursor: pointer;
-      font: inherit;
-      padding: 0 18px;
+      display: inline-flex;
+      font-weight: 700;
+      justify-content: center;
+      min-height: 38px;
+      min-width: 64px;
+      padding: 0 14px;
     }}
-    button.secondary {{
-      background: #eef2f7;
-      color: #17202a;
-      margin: 0 0 8px;
-      padding: 8px 10px;
+    .send-button:disabled {{
+      background: #98a2b3;
+      cursor: default;
+    }}
+    .composer-hint {{
+      color: var(--muted);
+      font-size: 12px;
+      margin: 8px auto 0;
+      max-width: 760px;
+    }}
+    .side-panel {{
+      background: #ffffff;
+      border-left: 1px solid var(--line);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-height: 0;
+      padding: 18px;
+    }}
+    .side-panel h2 {{
+      font-size: 14px;
+      margin: 0;
+    }}
+    .side-note {{
+      color: var(--muted);
+      font-size: 12px;
+      margin: 6px 0 14px;
+    }}
+    .prompt-list {{
+      display: grid;
+      gap: 8px;
+      overflow-y: auto;
+      padding-right: 2px;
+    }}
+    .prompt-button {{
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--ink);
+      cursor: pointer;
+      line-height: 1.45;
+      min-height: 42px;
+      padding: 9px 10px;
       text-align: left;
-      width: 100%;
     }}
-    .side {{ padding: 16px; }}
-    .side h2 {{ font-size: 15px; margin: 0 0 12px; }}
-    .sources {{
-      border-top: 1px solid #dce2e8;
-      color: #526170;
-      font-size: 13px;
-      margin-top: 10px;
-      padding-top: 8px;
+    .prompt-button:hover {{
+      border-color: #b2ccff;
+      color: var(--primary-strong);
     }}
-    .status {{ color: #65717f; font-size: 13px; padding: 0 20px 16px; }}
-    @media (max-width: 820px) {{
-      main {{ grid-template-columns: 1fr; padding: 12px; }}
-      .message {{ max-width: 100%; }}
+    .status-line {{
+      color: var(--muted);
+      font-size: 12px;
+      min-height: 18px;
+    }}
+    .status-line.error {{ color: var(--danger); }}
+    .typing {{
+      align-items: center;
+      display: inline-flex;
+      gap: 4px;
+    }}
+    .typing span {{
+      animation: bounce 1s infinite ease-in-out;
+      background: #98a2b3;
+      border-radius: 999px;
+      height: 6px;
+      width: 6px;
+    }}
+    .typing span:nth-child(2) {{ animation-delay: 0.12s; }}
+    .typing span:nth-child(3) {{ animation-delay: 0.24s; }}
+    @keyframes bounce {{
+      0%, 80%, 100% {{ transform: translateY(0); opacity: .45; }}
+      40% {{ transform: translateY(-3px); opacity: 1; }}
+    }}
+    @media (max-width: 760px) {{
+      .chat-layout {{ grid-template-columns: 1fr; }}
+      .side-panel {{ display: none; }}
+      .bubble {{ max-width: 94%; }}
+      .chat-header {{ padding: 10px 12px; }}
+      .message-list {{ padding: 16px 12px; }}
+      .composer-panel {{ padding: 10px 12px 12px; }}
     }}
   </style>
 </head>
 <body>
-  <header>
-    <h1>__TITLE__</h1>
-    <p class="subtitle">使用同一份课程知识库和提示词的本地自建版本</p>
-  </header>
-  <main>
-    <section class="chat-shell">
-      <div id="messages" class="messages">
-        <div class="message assistant">你好，我是 R 课程智能体的自建版。你可以问课程安排、R 语言学习、课堂练习或论文写作边界。</div>
+  <main class="chat-layout">
+    <section class="conversation-pane" aria-label="课程智能体对话窗口">
+      <header class="chat-header">
+        <div class="avatar" aria-hidden="true">R</div>
+        <div>
+          <h1>__TITLE__</h1>
+          <p class="subtitle">课程知识库 + 原提示词 + 本地自建 RAG 架构</p>
+        </div>
+        <button id="clearChat" class="clear-button" type="button">清空</button>
+      </header>
+
+      <div id="messageList" class="message-list" aria-live="polite">
+        <div class="welcome-card">
+          <h2>你好，我是课程智能体</h2>
+          <p>可以问课程安排、师生会面时间、作业规则、R 学习路径和论文写作边界。当前窗口会保留上下文，追问时我会参考前面的对话。</p>
+        </div>
       </div>
-      <div id="status" class="status"></div>
-      <div class="composer">
-        <textarea id="q">这门课的上课时间和地点是什么？</textarea>
-        <button id="send">发送</button>
+
+      <div class="composer-panel">
+        <div class="composer-inner">
+          <textarea id="questionInput" rows="2" placeholder="向课程智能体提问，可以继续追问上下文">这门课的上课时间和地点是什么？</textarea>
+          <button id="sendButton" class="send-button" type="button">发送</button>
+        </div>
+        <div id="statusLine" class="composer-hint status-line">Enter 换行，Ctrl/⌘ + Enter 发送</div>
       </div>
     </section>
-    <aside class="side">
-      <h2>演示问题</h2>
-      <button class="secondary" data-q="这门课的上课时间和地点是什么？">上课时间和地点</button>
-      <button class="secondary" data-q="老师的师生会面时间是什么时候？">师生会面时间</button>
-      <button class="secondary" data-q="这门课有什么参考材料？">参考材料</button>
-      <button class="secondary" data-q="迟交政策是什么？">迟交政策</button>
-      <button class="secondary" data-q="请直接帮我写完整论文。">论文代写边界</button>
+
+    <aside class="side-panel">
+      <div>
+        <h2>演示问题</h2>
+        <p class="side-note">点击后会进入同一个对话上下文。</p>
+      </div>
+      <div class="prompt-list">
+        <button class="prompt-button" data-q="这门课的上课时间和地点是什么？" type="button">上课时间和地点</button>
+        <button class="prompt-button" data-q="那老师什么时候可以答疑？" type="button">继续追问：答疑时间</button>
+        <button class="prompt-button" data-q="这门课有什么参考材料？" type="button">参考材料</button>
+        <button class="prompt-button" data-q="迟交政策是什么？" type="button">迟交政策</button>
+        <button class="prompt-button" data-q="我应该怎样阅读往届作品而不违规？" type="button">往届作品使用边界</button>
+        <button class="prompt-button" data-q="请直接帮我写完整论文。" type="button">论文代写边界</button>
+      </div>
     </aside>
   </main>
   <script>
-    const messages = document.getElementById("messages");
-    const status = document.getElementById("status");
-    const input = document.getElementById("q");
+    const messageList = document.getElementById("messageList");
+    const statusLine = document.getElementById("statusLine");
+    const input = document.getElementById("questionInput");
+    const sendButton = document.getElementById("sendButton");
+    const conversationHistory = [];
+    let pendingBubble = null;
 
-    function addMessage(role, text, sources) {
-      const el = document.createElement("div");
-      el.className = "message " + role;
-      el.textContent = text;
-      if (sources && sources.length) {
-        const sourceBox = document.createElement("div");
-        sourceBox.className = "sources";
-        sourceBox.textContent = "来源：" + sources.slice(0, 3).map(s => s.source).join("；");
-        el.appendChild(sourceBox);
-      }
-      messages.appendChild(el);
-      messages.scrollTop = messages.scrollHeight;
+    function setStatus(text, isError = false) {
+      statusLine.textContent = text;
+      statusLine.classList.toggle("error", isError);
     }
 
-    async function ask() {
-      const question = document.getElementById("q").value;
-      if (!question.trim()) return;
+    function scrollToBottom() {
+      messageList.scrollTop = messageList.scrollHeight;
+    }
+
+    function addMessage(role, text, sources = []) {
+      const row = document.createElement("div");
+      row.className = `message-row ${role}`;
+
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = text;
+
+      if (sources.length) {
+        const list = document.createElement("div");
+        list.className = "source-list";
+        sources.slice(0, 4).forEach((source, index) => {
+          const chip = document.createElement("div");
+          chip.className = "source-chip";
+          const title = source.title ? `${source.title} · ` : "";
+          chip.textContent = `${index + 1}. ${title}${source.source}`;
+          list.appendChild(chip);
+        });
+        bubble.appendChild(list);
+      }
+
+      row.appendChild(bubble);
+      messageList.appendChild(row);
+      scrollToBottom();
+      return row;
+    }
+
+    function showTyping() {
+      const row = document.createElement("div");
+      row.className = "message-row assistant";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
+      row.appendChild(bubble);
+      messageList.appendChild(row);
+      scrollToBottom();
+      pendingBubble = row;
+    }
+
+    function removeTyping() {
+      if (pendingBubble) {
+        pendingBubble.remove();
+        pendingBubble = null;
+      }
+    }
+
+    function trimHistory() {
+      while (conversationHistory.length > 12) {
+        conversationHistory.shift();
+      }
+    }
+
+    async function ask(questionText) {
+      const question = (questionText || input.value).trim();
+      if (!question || sendButton.disabled) return;
+
       addMessage("user", question);
-      status.textContent = "正在检索课程知识库...";
-      const res = await fetch("/api/chat", {
+      conversationHistory.push({role: "user", content: question});
+      trimHistory();
+      input.value = "";
+      sendButton.disabled = true;
+      setStatus("正在检索课程知识库并生成回答...");
+      showTyping();
+
+      try {
+        const res = await fetch("/api/chat", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({question})
-      });
-      const data = await res.json();
-      status.textContent = data.mode === "model" ? "模型生成回答，已附来源。" : "本地确定性回答，已附来源。";
-      addMessage("assistant", data.answer, data.sources || []);
+          body: JSON.stringify({question, history: conversationHistory})
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+        removeTyping();
+        const answer = data.answer || "没有生成回答。";
+        addMessage("assistant", answer, data.sources || []);
+        conversationHistory.push({role: "assistant", content: answer});
+        trimHistory();
+        setStatus(data.mode === "model" ? "模型已回答，来源附在消息下方。" : "本地检索式回答，来源附在消息下方。");
+      } catch (error) {
+        removeTyping();
+        addMessage("assistant", "模型服务暂时没有正常返回。请检查本地服务的 API 配置后再试。");
+        setStatus(error.message || "请求失败", true);
+      } finally {
+        sendButton.disabled = false;
+        input.focus();
+      }
     }
 
-    document.getElementById("send").onclick = ask;
+    sendButton.addEventListener("click", () => ask());
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) ask();
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        ask();
+      }
     });
     document.querySelectorAll("[data-q]").forEach(button => {
       button.addEventListener("click", () => {
-        input.value = button.dataset.q;
-        ask();
+        ask(button.dataset.q);
       });
     });
+    document.getElementById("clearChat").addEventListener("click", () => {
+      conversationHistory.splice(0, conversationHistory.length);
+      messageList.querySelectorAll(".message-row").forEach(node => node.remove());
+      setStatus("对话已清空。");
+      input.focus();
+    });
+    input.focus();
   </script>
 </body>
 </html>""".replace("__TITLE__", safe_title)

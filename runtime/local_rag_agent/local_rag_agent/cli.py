@@ -36,10 +36,27 @@ def retrieve_question(settings: Settings, question: str) -> list[dict[str, objec
     return rank_chunks(question, chunks, settings.top_k)
 
 
-def chat_question(settings: Settings, question: str, model_client: object | None = None) -> dict[str, object]:
-    retrieved = retrieve_question(settings, question)
+def chat_question(
+    settings: Settings,
+    question: str,
+    model_client: object | None = None,
+    history: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    retrieved = retrieve_question(settings, build_retrieval_query(question, history))
     client = model_client if model_client is not None else OpenAICompatibleClient.from_env()
-    return answer_question(settings, question, retrieved, client)
+    return answer_question(settings, question, retrieved, client, history=history)
+
+
+def build_retrieval_query(question: str, history: list[dict[str, object]] | None = None) -> str:
+    user_turns: list[str] = []
+    for item in history or []:
+        if item.get("role") != "user":
+            continue
+        content = item.get("content")
+        if isinstance(content, str) and content.strip():
+            user_turns.append(content.strip())
+    recent_context = "\n".join(user_turns[-3:])
+    return f"{recent_context}\n{question}".strip()
 
 
 def demo_check(settings: Settings, dify_url: str | None = None) -> dict[str, object]:
