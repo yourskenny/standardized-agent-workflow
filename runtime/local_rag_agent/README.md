@@ -44,6 +44,15 @@ python -m local_rag_agent chat `
   "这门课的上课时间和地点是什么？"
 ```
 
+Run the demo readiness check:
+
+```powershell
+python -m local_rag_agent demo-check `
+  --project C:\coding\syllabus_R\course-agent-r `
+  --config C:\coding\standardized-agent-workflow\runtime\local_rag_agent\examples\r-course-agent.toml `
+  --dify-url http://8.160.181.138/chatbot/GKQOidUeSHi9p0ja
+```
+
 Run regression evidence:
 
 ```powershell
@@ -70,7 +79,7 @@ http://127.0.0.1:8765
 
 ## Model Configuration
 
-If no model API key is set, `chat` returns retrieval-only output. This is useful for validating ingestion and source matching.
+If no model API key is set, `chat` returns a deterministic extractive answer based on the top retrieved source. This keeps the demo usable when model credentials or network access are unavailable. When a model API key is set, the runtime uses the same retrieved sources and system prompt to generate a more natural answer.
 
 To use an OpenAI-compatible model:
 

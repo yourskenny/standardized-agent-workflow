@@ -17,9 +17,9 @@ def answer_question(
     sources = [_source_payload(chunk) for chunk in retrieved_chunks]
     if model_client is None:
         return {
-            "answer": _retrieval_only_answer(question, retrieved_chunks),
+            "answer": build_extractive_answer(question, retrieved_chunks),
             "sources": sources,
-            "mode": "retrieval_only",
+            "mode": "extractive",
         }
 
     messages = build_messages(settings, question, retrieved_chunks)
@@ -40,6 +40,50 @@ def build_messages(settings: Settings, question: str, retrieved_chunks: list[dic
     ]
 
 
+def build_extractive_answer(question: str, retrieved_chunks: list[dict[str, object]]) -> str:
+    if _is_complete_submission_request(question):
+        return (
+            "我不能直接替你完成完整论文、完整作业或可直接提交的报告，"
+            "但可以帮你把任务拆成研究问题、数据来源、分析方法、R 代码步骤、论文结构和检查清单。"
+        )
+
+    if not retrieved_chunks:
+        return "根据目前知识库资料，未找到明确说明。建议你向任课教师或助教确认。"
+
+    top_chunk = retrieved_chunks[0]
+    answer = _extract_answer_text(str(top_chunk.get("content", "")))
+    if not answer:
+        answer = _compact_snippet(str(top_chunk.get("content", "")), 420)
+
+    return answer.strip()
+
+
+def _is_complete_submission_request(question: str) -> bool:
+    compact = question.replace(" ", "")
+    completion_terms = ("完整论文", "完整作业", "完整报告", "直接提交", "代写", "帮我写完", "直接帮我写")
+    return any(term in compact for term in completion_terms)
+
+
+def _extract_answer_text(content: str) -> str:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    for line in lines:
+        if line.startswith("答："):
+            return line[2:].strip()
+        if line.startswith("答案："):
+            return line[3:].strip()
+    for marker in ("答：", "答案："):
+        if marker in content:
+            return content.split(marker, 1)[1].split("\n\n", 1)[0].strip()
+    return ""
+
+
+def _compact_snippet(text: str, limit: int) -> str:
+    snippet = text.replace("\n", " ").strip()
+    if len(snippet) > limit:
+        return snippet[:limit].rstrip() + "..."
+    return snippet
+
+
 def _retrieval_only_answer(question: str, retrieved_chunks: list[dict[str, object]]) -> str:
     lines = [
         "本地检索结果（未配置模型 API，因此没有生成式回答）：",
@@ -50,9 +94,7 @@ def _retrieval_only_answer(question: str, retrieved_chunks: list[dict[str, objec
         lines.append("没有检索到相关片段。")
         return "\n".join(lines)
     for index, chunk in enumerate(retrieved_chunks, start=1):
-        snippet = str(chunk.get("content", "")).replace("\n", " ").strip()
-        if len(snippet) > 240:
-            snippet = snippet[:240].rstrip() + "..."
+        snippet = _compact_snippet(str(chunk.get("content", "")), 240)
         lines.append(f"{index}. {chunk.get('source')}#{chunk.get('chunk_id', '').split('#')[-1]} score={chunk.get('score', 0)}")
         lines.append(f"   {snippet}")
     return "\n".join(lines)

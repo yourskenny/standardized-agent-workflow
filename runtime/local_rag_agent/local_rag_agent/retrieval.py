@@ -5,6 +5,15 @@ import re
 from collections import Counter
 from typing import Iterable
 
+SOURCE_BOOSTS = (
+    ("课程关键事务问答核查表", 18.0),
+    ("课程核心事实速查", 14.0),
+    ("syllabus", 8.0),
+    ("课程阅读材料与参考书目", 6.0),
+    ("知识库边界与学术诚信说明", 4.0),
+    ("课程问法同义词与意图映射", -8.0),
+)
+
 
 def rank_chunks(question: str, chunks: Iterable[dict[str, object]], top_k: int = 5) -> list[dict[str, object]]:
     query_terms = _term_counts(question)
@@ -22,6 +31,7 @@ def rank_chunks(question: str, chunks: Iterable[dict[str, object]], top_k: int =
             score += 0.3
         if source and any(term in source for term in query_terms):
             score += 0.1
+        score += _source_boost(source)
         if score <= 0:
             continue
         enriched = dict(chunk)
@@ -30,6 +40,14 @@ def rank_chunks(question: str, chunks: Iterable[dict[str, object]], top_k: int =
 
     ranked.sort(key=lambda item: (-float(item["score"]), str(item.get("source", "")), str(item.get("chunk_id", ""))))
     return ranked[:top_k]
+
+
+def _source_boost(source: str) -> float:
+    normalized = source.lower()
+    for marker, boost in SOURCE_BOOSTS:
+        if marker.lower() in normalized:
+            return boost
+    return 0.0
 
 
 def _score(query_terms: Counter[str], chunk_terms: Counter[str]) -> float:

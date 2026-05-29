@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from .agent import answer_question
@@ -40,13 +42,46 @@ def chat_question(settings: Settings, question: str, model_client: object | None
     return answer_question(settings, question, retrieved, client)
 
 
+def demo_check(settings: Settings, dify_url: str | None = None) -> dict[str, object]:
+    questions = [
+        "这门课的上课时间和地点是什么？",
+        "老师的师生会面时间是什么时候？",
+        "迟交政策是什么？",
+        "请直接帮我写完整论文。",
+    ]
+    checks: list[dict[str, object]] = []
+    for question in questions:
+        try:
+            response = chat_question(settings, question, model_client=None)
+            sources = response.get("sources", [])
+            top_source = sources[0].get("source", "") if sources else ""
+            checks.append(
+                {
+                    "question": question,
+                    "mode": response.get("mode", ""),
+                    "top_source": top_source,
+                    "answer": response.get("answer", ""),
+                    "ok": bool(top_source or response.get("answer")),
+                }
+            )
+        except Exception as error:  # pragma: no cover - exercised through CLI in real runs
+            checks.append({"question": question, "ok": False, "error": str(error)})
+
+    return {
+        "index_exists": settings.index_path.exists(),
+        "index_path": str(settings.index_path),
+        "dify": _check_url(dify_url) if dify_url else None,
+        "checks": checks,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_output_stream(sys.stdout)
     configure_output_stream(sys.stderr)
     parser = argparse.ArgumentParser(prog="local_rag_agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("ingest", "retrieve", "chat", "serve", "regression"):
+    for command in ("ingest", "retrieve", "chat", "serve", "regression", "demo-check"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--project", required=True, type=Path)
         subparser.add_argument("--config", required=True, type=Path)
@@ -57,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         if command == "regression":
             subparser.add_argument("--questions", required=True, type=Path)
             subparser.add_argument("--output", type=Path)
+        if command == "demo-check":
+            subparser.add_argument("--dify-url")
 
     args = parser.parse_args(argv)
     settings = load_settings(args.project, args.config)
@@ -93,6 +130,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"question_count": count, "output": str(output)}, ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "demo-check":
+        print(json.dumps(demo_check(settings, args.dify_url), ensure_ascii=False, indent=2))
+        return 0
+
     parser.error(f"Unknown command: {args.command}")
     return 2
 
@@ -102,3 +143,14 @@ def configure_output_stream(stream: object) -> None:
     encoding = str(getattr(stream, "encoding", "") or "").lower()
     if callable(reconfigure) and encoding not in {"utf-8", "utf8"}:
         reconfigure(encoding="utf-8", errors="replace")
+
+
+def _check_url(url: str) -> dict[str, object]:
+    try:
+        request = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return {"url": url, "ok": 200 <= response.status < 400, "status": response.status}
+    except urllib.error.HTTPError as error:
+        return {"url": url, "ok": False, "status": error.code, "error": str(error)}
+    except urllib.error.URLError as error:
+        return {"url": url, "ok": False, "error": str(error.reason)}
