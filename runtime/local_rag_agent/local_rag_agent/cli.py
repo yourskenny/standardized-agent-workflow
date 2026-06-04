@@ -7,14 +7,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .agent import answer_question
 from .chunking import chunk_markdown
 from .config import Settings, load_settings
 from .index_store import read_index, write_index
-from .llm import OpenAICompatibleClient
 from .manifest import expand_manifest_entries
 from .regression import run_regression
 from .retrieval import rank_chunks
+from .runtime import AgentRuntime
+from .types import AgentRequest
+from .workflow import WorkflowRegistry
 
 
 def ingest_project(settings: Settings) -> dict[str, int | str]:
@@ -42,21 +43,13 @@ def chat_question(
     model_client: object | None = None,
     history: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    retrieved = retrieve_question(settings, build_retrieval_query(question, history))
-    client = model_client if model_client is not None else OpenAICompatibleClient.from_env()
-    return answer_question(settings, question, retrieved, client, history=history)
+    runtime = AgentRuntime(settings, model_client=model_client)
+    request = AgentRequest(message=question, history=history or [])
+    return runtime.run(request).to_dict()
 
 
 def build_retrieval_query(question: str, history: list[dict[str, object]] | None = None) -> str:
-    user_turns: list[str] = []
-    for item in history or []:
-        if item.get("role") != "user":
-            continue
-        content = item.get("content")
-        if isinstance(content, str) and content.strip():
-            user_turns.append(content.strip())
-    recent_context = "\n".join(user_turns[-3:])
-    return f"{recent_context}\n{question}".strip()
+    return AgentRuntime.build_retrieval_query(question, history)
 
 
 def demo_check(settings: Settings, dify_url: str | None = None) -> dict[str, object]:
@@ -87,6 +80,8 @@ def demo_check(settings: Settings, dify_url: str | None = None) -> dict[str, obj
     return {
         "index_exists": settings.index_path.exists(),
         "index_path": str(settings.index_path),
+        "runtime_configs": _runtime_config_status(settings),
+        "workflows": _workflow_status(),
         "dify": _check_url(dify_url) if dify_url else None,
         "checks": checks,
     }
@@ -160,6 +155,31 @@ def configure_output_stream(stream: object) -> None:
     encoding = str(getattr(stream, "encoding", "") or "").lower()
     if callable(reconfigure) and encoding not in {"utf-8", "utf8"}:
         reconfigure(encoding="utf-8", errors="replace")
+
+
+def _runtime_config_status(settings: Settings) -> dict[str, dict[str, object]]:
+    paths = {
+        "intent_config": settings.intent_config_path,
+        "workflow_config": settings.workflow_config_path,
+        "policy_config": settings.policy_config_path,
+        "tool_config": settings.tool_config_path,
+    }
+    return {
+        name: {
+            "path": str(path) if path is not None else "",
+            "exists": bool(path and path.exists()),
+        }
+        for name, path in paths.items()
+    }
+
+
+def _workflow_status() -> dict[str, bool]:
+    registry = WorkflowRegistry.builtins()
+    return {
+        "rag_qa": registry.has("rag_qa"),
+        "retrieval_debug": registry.has("retrieval_debug"),
+        "refusal_with_guidance": registry.has("refusal_with_guidance"),
+    }
 
 
 def _check_url(url: str) -> dict[str, object]:

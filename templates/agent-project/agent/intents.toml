@@ -1,0 +1,18 @@
+[[intents]]
+id = "knowledge_qa"
+description = "Answer source-backed questions from the project knowledge base."
+examples = ["<高频事实问题>", "<领域专业问题>"]
+keywords = ["<关键词1>", "<关键词2>"]
+workflow = "rag_qa"
+risk_level = "medium"
+knowledge_scopes = ["current", "stable", "policy"]
+
+[[intents]]
+id = "complete_submission_request"
+description = "Requests for complete assignments, papers, reports, or directly submittable work."
+examples = ["请直接帮我写完整论文", "帮我写完整作业"]
+keywords = ["完整论文", "完整作业", "完整报告", "直接提交", "代写"]
+workflow = "refusal_with_guidance"
+risk_level = "high"
+policy = "academic_integrity"
+knowledge_scopes = ["policy"]

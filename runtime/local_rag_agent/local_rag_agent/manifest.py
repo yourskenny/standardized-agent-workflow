@@ -10,7 +10,7 @@ EXCLUDED_PARTS = {"_templates", "_manifests", "_pre_ingestion", "archive", "main
 
 def parse_manifest_entries(text: str) -> list[str]:
     entries: list[str] = []
-    for line in text.splitlines():
+    for line in _entry_section_lines(text):
         stripped = line.strip()
         if not stripped.startswith("-"):
             continue
@@ -21,6 +21,31 @@ def parse_manifest_entries(text: str) -> list[str]:
         if entry:
             entries.append(entry)
     return entries
+
+
+def _entry_section_lines(text: str) -> list[str]:
+    lines = text.splitlines()
+    upload_start: int | None = None
+    for index, line in enumerate(lines):
+        if _heading_title(line) == "应上传":
+            upload_start = index + 1
+            break
+    if upload_start is None:
+        return lines
+
+    upload_lines: list[str] = []
+    for line in lines[upload_start:]:
+        if _heading_title(line):
+            break
+        upload_lines.append(line)
+    return upload_lines
+
+
+def _heading_title(line: str) -> str:
+    stripped = line.strip()
+    if not stripped.startswith("#"):
+        return ""
+    return re.sub(r"^#+\s*", "", stripped).strip()
 
 
 def expand_manifest_entries(settings: Settings) -> list[Path]:

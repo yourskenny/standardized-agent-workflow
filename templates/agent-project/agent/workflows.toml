@@ -1,0 +1,27 @@
+[[workflows]]
+id = "rag_qa"
+description = "Source-backed question answering over the project knowledge base."
+steps = [
+  "prepare_retrieval_query",
+  "run_retrieval",
+  "apply_policy",
+  "generate_answer",
+  "build_response",
+]
+
+[[workflows]]
+id = "retrieval_debug"
+description = "Return ranked retrieval evidence without generation."
+steps = [
+  "prepare_retrieval_query",
+  "run_retrieval",
+  "build_retrieval_debug_response",
+]
+
+[[workflows]]
+id = "refusal_with_guidance"
+description = "Refuse out-of-bound requests and offer allowed alternatives."
+steps = [
+  "apply_policy",
+  "build_policy_response",
+]

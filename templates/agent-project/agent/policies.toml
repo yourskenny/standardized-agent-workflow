@@ -1,0 +1,13 @@
+[[policies]]
+id = "academic_integrity"
+action = "refuse"
+reason = "complete_submission_request"
+message = "Cannot provide complete directly submitted work. I can help break the task into questions, sources, methods, outline, examples, and review checks."
+keywords = ["complete paper", "complete assignment", "direct submission", "ghostwrite"]
+
+[[policies]]
+id = "source_required"
+action = "no_evidence"
+reason = "no_retrieval_evidence"
+message = "The current knowledge base does not contain clear evidence for this question. Ask the project owner or maintainer to confirm."
+keywords = []

@@ -1,0 +1,26 @@
+[project]
+prompt_path = "agent/system-prompt.md"
+knowledge_root = "knowledge_base"
+manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"
+index_path = ".local_rag_agent/index.json"
+
+[runtime]
+default_intent = "knowledge_qa"
+default_workflow = "rag_qa"
+intent_config = "agent/intents.toml"
+workflow_config = "agent/workflows.toml"
+policy_config = "agent/policies.toml"
+tool_config = "agent/tools.toml"
+
+[retrieval]
+provider = "lexical"
+chunk_size = 1200
+chunk_overlap = 160
+top_k = 5
+
+[generation]
+provider = "openai_compatible"
+fallback = "extractive"
+
+[regression]
+output_dir = ".local_rag_agent/regression"

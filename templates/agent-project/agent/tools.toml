@@ -1,0 +1,5 @@
+[[tools]]
+id = "example_disabled_tool"
+description = "Placeholder for a future project-specific tool. Keep disabled until an implementation is wired into ToolProvider."
+enabled = false
+provider = "disabled"

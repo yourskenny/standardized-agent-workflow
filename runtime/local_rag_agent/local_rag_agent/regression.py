@@ -35,6 +35,9 @@ def run_regression(question_file: Path, output_file: Path, answer_fn: Callable[[
                 "answer": response.get("answer", ""),
                 "sources": response.get("sources", []),
                 "mode": response.get("mode", ""),
+                "intent": response.get("intent", ""),
+                "workflow": response.get("workflow", ""),
+                "trace": response.get("trace", {}),
             }
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             count += 1

@@ -16,6 +16,12 @@ class Settings:
     chunk_overlap: int = 160
     top_k: int = 5
     regression_output_dir: Path | None = None
+    intent_config_path: Path | None = None
+    workflow_config_path: Path | None = None
+    policy_config_path: Path | None = None
+    tool_config_path: Path | None = None
+    default_intent: str = "knowledge_qa"
+    default_workflow: str = "rag_qa"
 
 
 def load_settings(project_root: Path, config_path: Path) -> Settings:
@@ -26,8 +32,9 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
     if not config_file.exists():
         raise FileNotFoundError(f"Config file not found: {config_file}")
 
-    data = tomllib.loads(config_file.read_text(encoding="utf-8"))
+    data = tomllib.loads(config_file.read_text(encoding="utf-8-sig"))
     project = data.get("project", {})
+    runtime = data.get("runtime", {})
     retrieval = data.get("retrieval", {})
     regression = data.get("regression", {})
 
@@ -38,6 +45,18 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
     regression_output_dir = None
     if regression.get("output_dir"):
         regression_output_dir = _resolve_inside(root, regression["output_dir"])
+    intent_config_path = None
+    if runtime.get("intent_config"):
+        intent_config_path = _resolve_inside(root, runtime["intent_config"])
+    workflow_config_path = None
+    if runtime.get("workflow_config"):
+        workflow_config_path = _resolve_inside(root, runtime["workflow_config"])
+    policy_config_path = None
+    if runtime.get("policy_config"):
+        policy_config_path = _resolve_inside(root, runtime["policy_config"])
+    tool_config_path = None
+    if runtime.get("tool_config"):
+        tool_config_path = _resolve_inside(root, runtime["tool_config"])
 
     return Settings(
         project_root=root,
@@ -49,6 +68,12 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
         chunk_overlap=int(retrieval.get("chunk_overlap", 160)),
         top_k=int(retrieval.get("top_k", 5)),
         regression_output_dir=regression_output_dir,
+        intent_config_path=intent_config_path,
+        workflow_config_path=workflow_config_path,
+        policy_config_path=policy_config_path,
+        tool_config_path=tool_config_path,
+        default_intent=str(runtime.get("default_intent", "knowledge_qa")),
+        default_workflow=str(runtime.get("default_workflow", "rag_qa")),
     )
 
 
