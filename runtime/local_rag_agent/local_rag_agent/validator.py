@@ -19,6 +19,7 @@ KNOWN_RETRIEVER_PROVIDERS = {"lexical"}
 KNOWN_GENERATOR_PROVIDERS = {"extractive", "openai_compatible"}
 KNOWN_GENERATION_FALLBACKS = {"extractive"}
 KNOWN_TOOL_PROVIDERS = {"disabled", "mock"}
+KNOWN_GRAPH_CONDITIONS = {"default", "policy.blocked", "intent.requires_tool"}
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,8 @@ def _validate_workflow_definitions(
     steps = component_registry.step_registry()
     terminal_steps = component_registry.terminal_steps()
     for definition in workflow_definitions:
+        if getattr(definition, "type", "pipeline") == "graph":
+            errors.extend(_validate_graph_workflow(settings, definition))
         for step_id in definition.steps:
             if not steps.has(step_id):
                 errors.append(
@@ -202,6 +205,51 @@ def _validate_workflow_definitions(
                     code="NO_TERMINAL_RESPONSE_PATH",
                     path=settings.workflow_config_path or "",
                     detail=f"workflow {definition.id} has no terminal response step",
+                )
+            )
+    return errors
+
+
+def _validate_graph_workflow(settings: Settings, definition: object) -> list[ValidationIssue]:
+    errors: list[ValidationIssue] = []
+    node_ids = {str(node.get("id", "")) for node in getattr(definition, "nodes", []) if isinstance(node, dict)}
+    start = str(getattr(definition, "start", ""))
+    if not start or start not in node_ids:
+        errors.append(
+            ValidationIssue(
+                code="UNKNOWN_GRAPH_START",
+                path=settings.workflow_config_path or "",
+                detail=f"workflow {definition.id} references unknown graph start {start}",
+            )
+        )
+    for edge in getattr(definition, "edges", []):
+        if not isinstance(edge, dict):
+            continue
+        from_node = str(edge.get("from", ""))
+        to_node = str(edge.get("to", ""))
+        if from_node not in node_ids:
+            errors.append(
+                ValidationIssue(
+                    code="UNKNOWN_GRAPH_NODE",
+                    path=settings.workflow_config_path or "",
+                    detail=f"workflow {definition.id} edge references unknown source {from_node}",
+                )
+            )
+        if to_node not in node_ids:
+            errors.append(
+                ValidationIssue(
+                    code="UNKNOWN_GRAPH_EDGE_TARGET",
+                    path=settings.workflow_config_path or "",
+                    detail=f"workflow {definition.id} edge references unknown target {to_node}",
+                )
+            )
+        condition = str(edge.get("condition", "default")) or "default"
+        if condition not in KNOWN_GRAPH_CONDITIONS:
+            errors.append(
+                ValidationIssue(
+                    code="UNSUPPORTED_GRAPH_CONDITION",
+                    path=settings.workflow_config_path or "",
+                    detail=f"workflow {definition.id} edge uses unsupported condition {condition}",
                 )
             )
     return errors

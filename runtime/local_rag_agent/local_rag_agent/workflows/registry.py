@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .definitions import load_workflows
+from .graph import GraphWorkflow
 from .runner import WorkflowPipeline, WorkflowStep
 from .steps import (
     StepRegistry,
@@ -67,6 +68,21 @@ class WorkflowRegistry:
         pipelines: dict[str, WorkflowPipeline] = {}
         definitions = load_workflows(path)
         for definition in definitions:
+            if getattr(definition, "type", "pipeline") == "graph":
+                step_map: dict[str, WorkflowStep] = {}
+                for step_id in definition.steps:
+                    if not steps.has(step_id):
+                        raise ValueError(f"Unknown workflow step in {path}: {step_id}")
+                    step_map[step_id] = steps.get(step_id)
+                pipelines[definition.id] = GraphWorkflow(
+                    definition.id,
+                    definition.nodes,
+                    definition.edges,
+                    definition.start,
+                    step_map,
+                    requires_sources=definition.requires_sources,
+                )
+                continue
             workflow_steps: list[WorkflowStep] = []
             for step_id in definition.steps:
                 if not steps.has(step_id):

@@ -26,7 +26,7 @@ from local_rag_agent.config import Settings, load_settings
 from local_rag_agent.index_store import read_index
 from local_rag_agent.intent import IntentRouter, load_intent_tests, load_intents
 from local_rag_agent.manifest import expand_manifest_entries, parse_manifest_entries
-from local_rag_agent.policy import PolicyGuard, load_policies
+from local_rag_agent.policy import PolicyDefinition, PolicyGuard, load_policies
 from local_rag_agent.ports import GeneratorProvider, RetrieverProvider
 from local_rag_agent.regression import parse_regression_questions, run_regression, summarize_regression_report
 from local_rag_agent.retrieval import rank_chunks
@@ -1226,6 +1226,22 @@ class RunStoreTests(unittest.TestCase):
 
 
 class IntentConfigTests(unittest.TestCase):
+    def test_load_intents_reads_requires_tool_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "intents.toml"
+            path.write_text(
+                'schema_version = "intent.v1"\n'
+                '[[intents]]\n'
+                'id = "tool_lookup"\n'
+                'workflow = "tool_or_rag"\n'
+                'requires_tool = true\n',
+                encoding="utf-8",
+            )
+
+            intents = load_intents(path)
+
+            self.assertTrue(intents[0].requires_tool)
+
     def test_load_intents_reads_project_toml(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "intents.toml"
@@ -1867,6 +1883,54 @@ class ValidatorContractTests(unittest.TestCase):
 
             self.assertTrue(result.ok, result.to_dict())
 
+    def test_validate_project_config_reports_graph_workflow_contract_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'workflow_config = "agent/workflows.toml"\n',
+                encoding="utf-8",
+            )
+            (agent_dir / "workflows.toml").write_text(
+                'schema_version = "workflow.v3"\n'
+                '[[workflows]]\n'
+                'id = "broken_graph"\n'
+                'type = "graph"\n'
+                'start = "missing_start"\n'
+                '[[workflows.nodes]]\n'
+                'id = "route"\n'
+                'step = "tool.select"\n'
+                '[[workflows.nodes]]\n'
+                'id = "done"\n'
+                'step = "response.tool_result"\n'
+                'terminal = true\n'
+                '[[workflows.edges]]\n'
+                'from = "route"\n'
+                'to = "missing_node"\n'
+                'condition = "unknown.condition"\n'
+                '[[workflows.edges]]\n'
+                'from = "missing_source"\n'
+                'to = "done"\n'
+                'condition = "default"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            codes = [issue.code for issue in result.errors]
+            self.assertIn("UNKNOWN_GRAPH_START", codes)
+            self.assertIn("UNKNOWN_GRAPH_NODE", codes)
+            self.assertIn("UNKNOWN_GRAPH_EDGE_TARGET", codes)
+            self.assertIn("UNSUPPORTED_GRAPH_CONDITION", codes)
+
     def test_validate_project_config_requires_workflow_terminal_response_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -2391,6 +2455,43 @@ class WorkflowPipelineTests(unittest.TestCase):
             self.assertEqual(workflows[0].terminal_steps, ["build_policy_response", "build_response"])
             self.assertEqual(workflows[0].schema_version, "workflow.v2")
 
+    def test_load_workflows_reads_v3_graph_nodes_and_edges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "workflows.toml"
+            path.write_text(
+                'schema_version = "workflow.v3"\n'
+                '[[workflows]]\n'
+                'id = "tool_or_rag"\n'
+                'type = "graph"\n'
+                'start = "route"\n'
+                'requires_sources = false\n'
+                '[[workflows.nodes]]\n'
+                'id = "route"\n'
+                'step = "tool.select"\n'
+                'checkpoint_after = true\n'
+                '[[workflows.nodes]]\n'
+                'id = "tool"\n'
+                'step = "response.tool_result"\n'
+                'terminal = true\n'
+                '[[workflows.edges]]\n'
+                'from = "route"\n'
+                'to = "tool"\n'
+                'condition = "default"\n',
+                encoding="utf-8",
+            )
+
+            workflows = load_workflows(path)
+
+            self.assertEqual(workflows[0].id, "tool_or_rag")
+            self.assertEqual(workflows[0].type, "graph")
+            self.assertEqual(workflows[0].start, "route")
+            self.assertEqual(workflows[0].steps, ["tool.select", "response.tool_result"])
+            self.assertEqual(workflows[0].terminal_steps, ["response.tool_result"])
+            self.assertEqual(workflows[0].nodes[0]["id"], "route")
+            self.assertEqual(workflows[0].nodes[0]["step"], "tool.select")
+            self.assertEqual(workflows[0].edges[0]["condition"], "default")
+            self.assertEqual(workflows[0].schema_version, "workflow.v3")
+
     def test_workflow_registry_from_config_runs_configured_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -2447,6 +2548,249 @@ class WorkflowPipelineTests(unittest.TestCase):
                 response["trace"]["steps"][0]["detail"]["steps"],
                 ["prepare_retrieval_query", "run_retrieval", "build_retrieval_debug_response"],
             )
+
+    def test_workflow_registry_runs_graph_workflow_by_following_default_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            workflow_config = root / "workflows.toml"
+            workflow_config.write_text(
+                'schema_version = "workflow.v3"\n'
+                '[[workflows]]\n'
+                'id = "graph_debug"\n'
+                'type = "graph"\n'
+                'start = "prepare"\n'
+                'requires_sources = false\n'
+                '[[workflows.nodes]]\n'
+                'id = "prepare"\n'
+                'step = "prepare_retrieval_query"\n'
+                '[[workflows.nodes]]\n'
+                'id = "debug"\n'
+                'step = "build_retrieval_debug_response"\n'
+                'terminal = true\n'
+                '[[workflows.edges]]\n'
+                'from = "prepare"\n'
+                'to = "debug"\n'
+                'condition = "default"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                workflow_config_path=workflow_config,
+            )
+            decision = IntentRouter(
+                load_intents_from_inline(
+                    '[[intents]]\n'
+                    'id = "debug"\n'
+                    'workflow = "graph_debug"\n'
+                    'keywords = ["debug"]\n'
+                )
+            ).route("debug")
+            trace = AgentTrace(intent=decision.intent.id, workflow=decision.intent.workflow)
+            context = WorkflowContext(settings, AgentRequest("debug evidence"), decision, trace)
+
+            response = WorkflowRegistry.from_config(workflow_config).get("graph_debug").run(context).to_dict()
+
+            self.assertEqual(response["workflow"], "graph_debug")
+            self.assertEqual(response["mode"], "retrieval_debug")
+            step_names = [step["name"] for step in response["trace"]["steps"]]
+            self.assertEqual(step_names[:2], ["start_graph_workflow", "prepare_retrieval_query"])
+            self.assertNotIn("run_retrieval", step_names)
+
+    def test_graph_workflow_prefers_policy_blocked_edge_over_default_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            workflow_config = root / "workflows.toml"
+            workflow_config.write_text(
+                'schema_version = "workflow.v3"\n'
+                '[[workflows]]\n'
+                'id = "policy_route"\n'
+                'type = "graph"\n'
+                'start = "policy"\n'
+                'requires_sources = false\n'
+                '[[workflows.nodes]]\n'
+                'id = "policy"\n'
+                'step = "apply_policy"\n'
+                '[[workflows.nodes]]\n'
+                'id = "debug"\n'
+                'step = "build_retrieval_debug_response"\n'
+                'terminal = true\n'
+                '[[workflows.nodes]]\n'
+                'id = "blocked"\n'
+                'step = "build_policy_response"\n'
+                'terminal = true\n'
+                '[[workflows.edges]]\n'
+                'from = "policy"\n'
+                'to = "debug"\n'
+                'condition = "default"\n'
+                '[[workflows.edges]]\n'
+                'from = "policy"\n'
+                'to = "blocked"\n'
+                'condition = "policy.blocked"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                workflow_config_path=workflow_config,
+            )
+            decision = IntentRouter(
+                load_intents_from_inline(
+                    '[[intents]]\n'
+                    'id = "blocked"\n'
+                    'workflow = "policy_route"\n'
+                    'keywords = ["blocked"]\n'
+                    'policy = "deny"\n'
+                )
+            ).route("blocked")
+            trace = AgentTrace(intent=decision.intent.id, workflow=decision.intent.workflow)
+            context = WorkflowContext(
+                settings,
+                AgentRequest("blocked"),
+                decision,
+                trace,
+                policy_guard=PolicyGuard.builtins(
+                    [PolicyDefinition(id="deny", action="refuse", message="blocked by policy")]
+                ),
+            )
+
+            response = WorkflowRegistry.from_config(workflow_config).get("policy_route").run(context).to_dict()
+
+            self.assertEqual(response["mode"], "refusal")
+            self.assertEqual(response["answer"], "blocked by policy")
+
+    def test_graph_workflow_follows_intent_requires_tool_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            workflow_config = root / "workflows.toml"
+            workflow_config.write_text(
+                'schema_version = "workflow.v3"\n'
+                '[[workflows]]\n'
+                'id = "tool_route"\n'
+                'type = "graph"\n'
+                'start = "route"\n'
+                'requires_sources = false\n'
+                '[[workflows.nodes]]\n'
+                'id = "route"\n'
+                'step = "prepare_retrieval_query"\n'
+                '[[workflows.nodes]]\n'
+                'id = "debug"\n'
+                'step = "build_retrieval_debug_response"\n'
+                'terminal = true\n'
+                '[[workflows.nodes]]\n'
+                'id = "tool"\n'
+                'step = "response.tool_result"\n'
+                'terminal = true\n'
+                '[[workflows.edges]]\n'
+                'from = "route"\n'
+                'to = "debug"\n'
+                'condition = "default"\n'
+                '[[workflows.edges]]\n'
+                'from = "route"\n'
+                'to = "tool"\n'
+                'condition = "intent.requires_tool"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                workflow_config_path=workflow_config,
+            )
+            decision = IntentRouter(
+                load_intents_from_inline(
+                    '[[intents]]\n'
+                    'id = "tool_lookup"\n'
+                    'workflow = "tool_route"\n'
+                    'keywords = ["lookup"]\n'
+                    'requires_tool = true\n'
+                )
+            ).route("lookup")
+            trace = AgentTrace(intent=decision.intent.id, workflow=decision.intent.workflow)
+            context = WorkflowContext(settings, AgentRequest("lookup"), decision, trace)
+
+            response = WorkflowRegistry.from_config(workflow_config).get("tool_route").run(context).to_dict()
+
+            self.assertEqual(response["mode"], "tool_error")
+            self.assertEqual(response["answer"], "Tool did not produce output.")
+
+    def test_graph_workflow_writes_checkpoint_after_marked_node(self):
+        from local_rag_agent.stores.sqlite import SQLiteRunStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            workflow_config = root / "workflows.toml"
+            workflow_config.write_text(
+                'schema_version = "workflow.v3"\n'
+                '[[workflows]]\n'
+                'id = "checkpoint_graph"\n'
+                'type = "graph"\n'
+                'start = "prepare"\n'
+                'requires_sources = false\n'
+                '[[workflows.nodes]]\n'
+                'id = "prepare"\n'
+                'step = "prepare_retrieval_query"\n'
+                'checkpoint_after = true\n'
+                '[[workflows.nodes]]\n'
+                'id = "debug"\n'
+                'step = "build_retrieval_debug_response"\n'
+                'terminal = true\n'
+                '[[workflows.edges]]\n'
+                'from = "prepare"\n'
+                'to = "debug"\n'
+                'condition = "default"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                workflow_config_path=workflow_config,
+            )
+            decision = IntentRouter(
+                load_intents_from_inline(
+                    '[[intents]]\n'
+                    'id = "debug"\n'
+                    'workflow = "checkpoint_graph"\n'
+                    'keywords = ["debug"]\n'
+                )
+            ).route("debug")
+            store = SQLiteRunStore.in_memory()
+            self.addCleanup(store.close)
+            store.create_run(run_id="run-graph", intent="debug", workflow="checkpoint_graph")
+            trace = AgentTrace(intent=decision.intent.id, workflow=decision.intent.workflow, run_id="run-graph")
+            context = WorkflowContext(
+                settings,
+                AgentRequest("debug checkpoint"),
+                decision,
+                trace,
+                run_store=store,
+                run_id="run-graph",
+            )
+
+            WorkflowRegistry.from_config(workflow_config).get("checkpoint_graph").run(context)
+
+            checkpoints = store.list_checkpoints("run-graph")
+            self.assertEqual([checkpoint["node_id"] for checkpoint in checkpoints], ["prepare"])
+            self.assertEqual(checkpoints[0]["state"]["retrieval_query"], "debug checkpoint")
 
     def test_tool_runtime_authorizes_disabled_and_intent_restricted_tools_before_calling_provider(self):
         from local_rag_agent.tool_runtime import ToolRuntime

@@ -19,6 +19,7 @@ class IntentDefinition:
     confidence_threshold: float = 0.0
     risk_level: str = "medium"
     policy: str = ""
+    requires_tool: bool = False
     knowledge_scopes: list[str] = field(default_factory=list)
     requires_sources: bool | None = None
     schema_version: str = ""
@@ -94,6 +95,7 @@ def _intent_from_record(record: dict[str, object], path: Path, schema_version: s
             "confidence_threshold",
             "risk_level",
             "policy",
+            "requires_tool",
             "knowledge_scopes",
             "requires_sources",
             "tests",
@@ -116,6 +118,7 @@ def _intent_from_record(record: dict[str, object], path: Path, schema_version: s
         confidence_threshold=float(record.get("confidence_threshold", 0.0)),
         risk_level=str(record.get("risk_level", "medium")),
         policy=str(record.get("policy", "")),
+        requires_tool=bool(record.get("requires_tool", False)) if isinstance(record.get("requires_tool", False), bool) else False,
         knowledge_scopes=_string_list(record.get("knowledge_scopes", [])),
         requires_sources=_optional_bool(record.get("requires_sources")),
         schema_version=schema_version,
