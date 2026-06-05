@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .intent import IntentDecision
+from .schema import read_schema_version, warn_unknown_fields
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,7 @@ class PolicyDefinition:
     reason: str = ""
     message: str = ""
     keywords: list[str] = field(default_factory=list)
+    schema_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -29,10 +31,12 @@ def load_policies(path: Path | None) -> list[PolicyDefinition]:
     if path is None or not path.exists():
         return []
     data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    schema_version = read_schema_version(data, "policy", path)
+    warn_unknown_fields(data, {"schema_version", "policies"}, path)
     records = data.get("policies", [])
     if not isinstance(records, list):
         raise ValueError(f"Invalid policy config: {path}")
-    return [_policy_from_record(record, path) for record in records if isinstance(record, dict)]
+    return [_policy_from_record(record, path, schema_version) for record in records if isinstance(record, dict)]
 
 
 class PolicyGuard:
@@ -73,7 +77,13 @@ class PolicyGuard:
         return PolicyDecision(allowed=True)
 
 
-def _policy_from_record(record: dict[str, object], path: Path) -> PolicyDefinition:
+def _policy_from_record(record: dict[str, object], path: Path, schema_version: str) -> PolicyDefinition:
+    warn_unknown_fields(
+        record,
+        {"id", "action", "reason", "message", "keywords"},
+        path,
+        "policies",
+    )
     policy_id = str(record.get("id", "")).strip()
     if not policy_id:
         raise ValueError(f"Policy missing id in {path}")
@@ -83,6 +93,7 @@ def _policy_from_record(record: dict[str, object], path: Path) -> PolicyDefiniti
         reason=str(record.get("reason", "")),
         message=str(record.get("message", "")),
         keywords=_string_list(record.get("keywords", [])),
+        schema_version=schema_version,
     )
 
 

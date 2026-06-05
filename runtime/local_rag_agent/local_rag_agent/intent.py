@@ -4,6 +4,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .schema import read_schema_version, warn_unknown_fields
+
 
 @dataclass(frozen=True)
 class IntentDefinition:
@@ -15,6 +17,7 @@ class IntentDefinition:
     risk_level: str = "medium"
     policy: str = ""
     knowledge_scopes: list[str] = field(default_factory=list)
+    schema_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -29,13 +32,30 @@ def load_intents(path: Path | None) -> list[IntentDefinition]:
     if path is None or not path.exists():
         return []
     data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    schema_version = read_schema_version(data, "intent", path)
+    warn_unknown_fields(data, {"schema_version", "intents"}, path)
     records = data.get("intents", [])
     if not isinstance(records, list):
         raise ValueError(f"Invalid intent config: {path}")
-    return [_intent_from_record(record, path) for record in records if isinstance(record, dict)]
+    return [_intent_from_record(record, path, schema_version) for record in records if isinstance(record, dict)]
 
 
-def _intent_from_record(record: dict[str, object], path: Path) -> IntentDefinition:
+def _intent_from_record(record: dict[str, object], path: Path, schema_version: str) -> IntentDefinition:
+    warn_unknown_fields(
+        record,
+        {
+            "id",
+            "workflow",
+            "description",
+            "examples",
+            "keywords",
+            "risk_level",
+            "policy",
+            "knowledge_scopes",
+        },
+        path,
+        "intents",
+    )
     intent_id = str(record.get("id", "")).strip()
     if not intent_id:
         raise ValueError(f"Intent missing id in {path}")
@@ -49,6 +69,7 @@ def _intent_from_record(record: dict[str, object], path: Path) -> IntentDefiniti
         risk_level=str(record.get("risk_level", "medium")),
         policy=str(record.get("policy", "")),
         knowledge_scopes=_string_list(record.get("knowledge_scopes", [])),
+        schema_version=schema_version,
     )
 
 

@@ -1,5 +1,14 @@
+schema_version = "tool.v1"
+
 [[tools]]
 id = "example_disabled_tool"
 description = "Placeholder for a future project-specific tool. Keep disabled until an implementation is wired into ToolProvider."
 enabled = false
 provider = "disabled"
+allowed_intents = []
+risk_level = "low"
+timeout_seconds = 8
+max_output_bytes = 20000
+
+[tools.schema]
+type = "object"

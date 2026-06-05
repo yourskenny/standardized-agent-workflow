@@ -1,0 +1,31 @@
+title = "Local Agent"
+home_title = "Local Agent Workspace"
+home_heading = "Agent workspace"
+home_lead = "Open the local agent, inspect sources, and run project-specific regression checks."
+placeholder = "Ask this agent"
+status_text = "Searching the project knowledge base and preparing an answer..."
+welcome_intro = "Ask a project-scoped question. The runtime will answer from configured knowledge, show sources, and respect project policies."
+
+[[welcome_items]]
+title = "Source-backed questions"
+text = "Answer questions from the configured project knowledge base."
+
+[[welcome_items]]
+title = "Traceable evidence"
+text = "Show retrieved sources so maintainers can inspect answer support."
+
+[[welcome_items]]
+title = "Boundary-aware help"
+text = "Refuse or downgrade requests when project policy requires it."
+
+[[demo_sources]]
+label = "project-facts.md"
+source = "project-facts.md"
+
+[[demo_sources]]
+label = "policies.md"
+source = "policies.md"
+
+[[demo_sources]]
+label = "regression-questions.md"
+source = "regression-questions.md"

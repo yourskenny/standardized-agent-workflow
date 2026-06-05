@@ -1,3 +1,5 @@
+schema_version = "runtime.v1"
+
 [project]
 prompt_path = "agent/system-prompt.md"
 knowledge_root = "knowledge_base"
@@ -11,12 +13,14 @@ intent_config = "agent/intents.toml"
 workflow_config = "agent/workflows.toml"
 policy_config = "agent/policies.toml"
 tool_config = "agent/tools.toml"
+ui_config = "agent/ui.toml"
 
 [retrieval]
 provider = "lexical"
 chunk_size = 1200
 chunk_overlap = 160
 top_k = 5
+source_boosts = []
 
 [generation]
 provider = "openai_compatible"

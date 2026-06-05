@@ -9,10 +9,10 @@ from pathlib import Path
 
 from .chunking import chunk_markdown
 from .config import Settings, load_settings
-from .index_store import read_index, write_index
+from .index_store import write_index
 from .manifest import expand_manifest_entries
-from .regression import run_regression
-from .retrieval import rank_chunks
+from .ports import RetrieverProvider
+from .regression import parse_regression_questions, run_regression, summarize_regression_report
 from .runtime import AgentRuntime
 from .types import AgentRequest
 from .workflow import WorkflowRegistry
@@ -30,11 +30,7 @@ def ingest_project(settings: Settings) -> dict[str, int | str]:
 
 
 def retrieve_question(settings: Settings, question: str) -> list[dict[str, object]]:
-    payload = read_index(settings)
-    chunks = payload.get("chunks", [])
-    if not isinstance(chunks, list):
-        raise ValueError(f"Invalid index format: {settings.index_path}")
-    return rank_chunks(question, chunks, settings.top_k)
+    return RetrieverProvider.from_settings(settings).retrieve(settings, question)
 
 
 def chat_question(
@@ -53,12 +49,7 @@ def build_retrieval_query(question: str, history: list[dict[str, object]] | None
 
 
 def demo_check(settings: Settings, dify_url: str | None = None) -> dict[str, object]:
-    questions = [
-        "这门课的上课时间和地点是什么？",
-        "老师的师生会面时间是什么时候？",
-        "迟交政策是什么？",
-        "请直接帮我写完整论文。",
-    ]
+    questions = _demo_questions(settings)
     checks: list[dict[str, object]] = []
     for question in questions:
         try:
@@ -93,10 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="local_rag_agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("ingest", "retrieve", "chat", "serve", "regression", "demo-check"):
+    for command in ("ingest", "retrieve", "chat", "serve", "regression", "demo-check", "release-gate"):
         subparser = subparsers.add_parser(command)
-        subparser.add_argument("--project", required=True, type=Path)
-        subparser.add_argument("--config", required=True, type=Path)
+        if command != "release-gate":
+            subparser.add_argument("--project", required=True, type=Path)
+            subparser.add_argument("--config", required=True, type=Path)
         if command in {"retrieve", "chat"}:
             subparser.add_argument("question")
         if command == "serve":
@@ -106,9 +98,11 @@ def main(argv: list[str] | None = None) -> int:
             subparser.add_argument("--output", type=Path)
         if command == "demo-check":
             subparser.add_argument("--dify-url")
+        if command == "release-gate":
+            subparser.add_argument("--report", required=True, type=Path)
 
     args = parser.parse_args(argv)
-    settings = load_settings(args.project, args.config)
+    settings = load_settings(args.project, args.config) if args.command != "release-gate" else None
 
     if args.command == "ingest":
         print(json.dumps(ingest_project(settings), ensure_ascii=False, indent=2))
@@ -146,6 +140,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(demo_check(settings, args.dify_url), ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "release-gate":
+        summary = summarize_regression_report(args.report)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0 if summary["ok"] else 1
+
     parser.error(f"Unknown command: {args.command}")
     return 2
 
@@ -180,6 +179,21 @@ def _workflow_status() -> dict[str, bool]:
         "retrieval_debug": registry.has("retrieval_debug"),
         "refusal_with_guidance": registry.has("refusal_with_guidance"),
     }
+
+
+def _demo_questions(settings: Settings) -> list[str]:
+    question_path = settings.project_root / "examples" / "core-regression-questions.md"
+    if question_path.exists():
+        parsed = parse_regression_questions(question_path.read_text(encoding="utf-8"))
+        questions = [item["question"] for item in parsed if item.get("question")]
+        if questions:
+            return questions[:4]
+    return [
+        "What can this project agent answer?",
+        "What are the main boundaries for this project?",
+        "Which sources support the answer?",
+        "Please produce a complete directly submittable report.",
+    ]
 
 
 def _check_url(url: str) -> dict[str, object]:

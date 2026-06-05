@@ -45,6 +45,7 @@ class AgentTrace:
     intent: str
     workflow: str
     steps: list[dict[str, object]] = field(default_factory=list)
+    config_versions: dict[str, str] = field(default_factory=dict)
 
     def add_step(self, name: str, detail: dict[str, object] | None = None) -> None:
         self.steps.append({"name": name, "detail": detail or {}})
@@ -53,6 +54,7 @@ class AgentTrace:
         return {
             "intent": self.intent,
             "workflow": self.workflow,
+            "config_versions": self.config_versions,
             "steps": self.steps,
         }
 

@@ -7,17 +7,20 @@ from urllib.parse import parse_qs, urlparse
 
 from .cli import chat_question
 from .config import Settings
+from .ui import UiConfig, load_ui_config
 
 
 def run_server(settings: Settings, port: int = 8765) -> None:
+    ui = load_ui_config(settings.ui_config_path)
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/":
-                self._send_html(render_course_site_home())
+                self._send_html(render_workspace_home(ui))
                 return
             if parsed.path in {"/chatbot", "/chatbot/"}:
-                self._send_html(render_chat_page("R 课程智能体（自建版）"))
+                self._send_html(render_chat_page(ui=ui))
                 return
             if parsed.path == "/api/chat":
                 question = parse_qs(parsed.query).get("q", [""])[0]
@@ -75,8 +78,11 @@ def run_server(settings: Settings, port: int = 8765) -> None:
     server.serve_forever()
 
 
-def render_chat_page(title: str = "Local RAG Agent") -> str:
-    safe_title = escape_text(title)
+def render_chat_page(title: str | None = None, ui: UiConfig | None = None) -> str:
+    ui = ui or UiConfig(title=title or "Local Agent")
+    safe_title = escape_text(title or ui.title)
+    welcome_items = _render_welcome_items(ui)
+    demo_sources = _render_demo_sources(ui)
     return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -468,26 +474,17 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       </button>
     </div>
 
-    <section id="chatCanvas" class="chat-canvas" aria-label="课程智能体对话窗口">
+    <section id="chatCanvas" class="chat-canvas" aria-label="Agent conversation">
       <div id="messageList" class="message-list" aria-live="polite">
         <article class="message-card" id="welcomeCard">
           <div class="assistant-content">
-            <ul>
-              <li><strong>课程事务问题</strong>：解答上课时间、地点、教师联系方式、评分方式、阅读材料等课程信息。</li>
-              <li><strong>R 语言知识</strong>：讲解 R 语言基础语法、数据类型、tidyverse 核心包（如 <code>tibble</code>、<code>dplyr</code>、<code>ggplot2</code>）、R Markdown 等课程内容，并给出可运行的代码示例。</li>
-              <li><strong>课堂练习辅导</strong>：指导你完成课堂练习，提供结构建议和代码逻辑检查，帮助你提升练习质量。</li>
-              <li><strong>作业与论文参考</strong>：协助你缩小研究兴趣、拆解研究问题、设计分析方法、提供代码片段和论文结构建议，但不会代写完整作业或论文。</li>
-            </ul>
-            <p>你可以随时向我提问，无论是“这节课推荐读什么书”，还是“如何用 <code>dplyr</code> 筛选数据”，我都会根据课程知识库给出准确、具体的回答。如果有不确定的地方，我也会如实告知，并建议你向老师或助教确认。</p>
-            <p>期待与你一起学习 R 语言！有什么我可以帮你的？</p>
+            __WELCOME_ITEMS__
+            <p>__WELCOME_INTRO__</p>
           </div>
           <div class="source-section">
-            <div class="source-title">引用</div>
+            <div class="source-title">Sources</div>
             <div class="source-list">
-              <button class="source-chip" type="button" data-demo-source="introduction-to-R.md"><span class="source-icon">doc</span>introduction-to-R.md</button>
-              <button class="source-chip" type="button" data-demo-source="使用tibble实现简单数据框.md"><span class="source-icon">doc</span>使用tibble实现简单数据框.md</button>
-              <button class="source-chip" type="button" data-demo-source="使用ggplot2进行数据可视化II.md"><span class="source-icon">doc</span>使用ggplot2进行数据可视化II.md</button>
-              <button class="source-more" type="button">+ 3</button>
+              __DEMO_SOURCES__
             </div>
           </div>
         </article>
@@ -495,7 +492,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
 
       <div class="composer-panel">
         <div class="composer-inner">
-          <textarea id="questionInput" rows="1" placeholder="和 R 课程智能体 聊天"></textarea>
+          <textarea id="questionInput" rows="1" placeholder="__PLACEHOLDER__"></textarea>
           <button id="sendButton" class="send-button" type="button" aria-label="发送">
             <svg width="27" height="27" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M4 5.5 20 12 4 18.5v-5.2L13.5 12 4 10.7V5.5Z" fill="currentColor"/>
@@ -640,7 +637,7 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       trimHistory();
       input.value = "";
       sendButton.disabled = true;
-      setStatus("正在检索课程知识库并生成回答...");
+      setStatus("__STATUS_TEXT__");
       showTyping();
 
       try {
@@ -695,24 +692,35 @@ def render_chat_page(title: str = "Local RAG Agent") -> str:
       button.addEventListener("click", () => {
         openSourcePopover({
           title: button.dataset.demoSource || button.textContent,
-          source: "示例欢迎语引用",
-          content: "这是欢迎语中的示例引用。真实问答返回后，点击引用会展示检索到的知识库片段。"
+          source: "Example welcome source",
+          content: "This is an example source shown before the first answer. Real answers display retrieved project knowledge snippets."
         }, index);
       });
     });
     input.focus();
   </script>
 </body>
-</html>""".replace("__TITLE__", safe_title)
+</html>""".replace("__TITLE__", safe_title).replace(
+        "__WELCOME_ITEMS__", welcome_items
+    ).replace(
+        "__WELCOME_INTRO__", escape_text(ui.welcome_intro)
+    ).replace(
+        "__DEMO_SOURCES__", demo_sources
+    ).replace(
+        "__PLACEHOLDER__", escape_text(ui.placeholder)
+    ).replace(
+        "__STATUS_TEXT__", escape_js_string(ui.status_text)
+    )
 
 
-def render_course_site_home() -> str:
+def render_workspace_home(ui: UiConfig | None = None) -> str:
+    ui = ui or UiConfig()
     return """<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>R 课程智能体与往届作品库</title>
+    <title>__HOME_TITLE__</title>
     <style>
       :root {
         --bg: #f7f8f5;
@@ -847,23 +855,23 @@ def render_course_site_home() -> str:
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/">R 课程助手</a>
+      <a class="brand" href="/">__HOME_TITLE__</a>
       <nav>
-        <a href="http://8.160.181.138:8097/reports.html" target="_blank" rel="noopener">往届作品</a>
-        <a href="http://8.160.181.138:8097/guide.html" target="_blank" rel="noopener">使用说明</a>
+        <a href="/chatbot">Agent</a>
+        <a href="#boundaries">Boundaries</a>
       </nav>
     </header>
 
     <main class="home-shell">
       <section class="intro-panel">
         <div>
-          <p class="eyebrow">R 语言与数据可视化</p>
-          <h1>课程智能体与往届作品查阅入口</h1>
-          <p class="lead">左侧用于进入课程智能体，右侧可查阅往届课程报告与论文材料。往届材料供学习结构、选题和方法，不作为智能体检索依据。</p>
+          <p class="eyebrow">Local runtime</p>
+          <h1>__HOME_HEADING__</h1>
+          <p class="lead">__HOME_LEAD__</p>
         </div>
         <div class="quick-actions">
-          <a class="primary-action" href="http://8.160.181.138:8097/reports.html" target="_blank" rel="noopener">浏览往届作品</a>
-          <a class="secondary-action" href="http://8.160.181.138:8097/guide.html" target="_blank" rel="noopener">查看使用边界</a>
+          <a class="primary-action" href="/chatbot">Open agent</a>
+          <a class="secondary-action" href="#boundaries">Review boundaries</a>
         </div>
       </section>
 
@@ -871,30 +879,74 @@ def render_course_site_home() -> str:
         <article class="agent-panel">
           <div class="section-head">
             <p class="eyebrow">Agent</p>
-            <h2>课程智能体</h2>
+            <h2>Local agent</h2>
           </div>
           <div id="agentMount" class="agent-frame">
-            <iframe src="/chatbot" title="课程智能体"></iframe>
+            <iframe src="/chatbot" title="Local agent"></iframe>
           </div>
         </article>
 
-        <aside class="notice-panel">
+        <aside id="boundaries" class="notice-panel">
           <div class="section-head">
             <p class="eyebrow">Boundary</p>
-            <h2>资料使用边界</h2>
+            <h2>Boundaries</h2>
           </div>
           <ul class="check-list">
-            <li>学生可以直接查阅往届作品原件。</li>
-            <li>智能体不把往届作品全文作为回答依据。</li>
-            <li>智能体可以指导如何阅读范例、形成问题和组织报告。</li>
-            <li>不要复制、改写或仿写往届作品作为提交件。</li>
+            <li>Only files listed in the project manifest are used for retrieval.</li>
+            <li>Maintenance-only and pre-ingestion material should stay outside user-facing answers.</li>
+            <li>High-risk or unsupported answers should include sources or be refused.</li>
+            <li>Project-specific policy belongs in configuration, not runtime code.</li>
           </ul>
         </aside>
       </section>
     </main>
   </body>
-</html>"""
+</html>""".replace("__HOME_TITLE__", escape_text(ui.home_title)).replace(
+        "__HOME_HEADING__", escape_text(ui.home_heading)
+    ).replace("__HOME_LEAD__", escape_text(ui.home_lead))
 
 
 def escape_text(value: str) -> str:
     return html.escape(value, quote=True)
+
+
+def escape_js_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)[1:-1]
+
+
+def _render_welcome_items(ui: UiConfig) -> str:
+    items = ui.welcome_items or [
+        WelcomeItemProxy("Source-backed questions", "Answer questions from the configured project knowledge base."),
+        WelcomeItemProxy("Traceable evidence", "Show retrieved sources so maintainers can inspect answer support."),
+        WelcomeItemProxy("Boundary-aware help", "Refuse or downgrade requests when project policy requires it."),
+    ]
+    lines = ["<ul>"]
+    for item in items:
+        lines.append(f"<li><strong>{escape_text(item.title)}</strong>: {escape_text(item.text)}</li>")
+    lines.append("</ul>")
+    return "\n".join(lines)
+
+
+def _render_demo_sources(ui: UiConfig) -> str:
+    sources = ui.demo_sources or [
+        WelcomeSourceProxy("project-facts.md", "project-facts.md"),
+        WelcomeSourceProxy("policies.md", "policies.md"),
+        WelcomeSourceProxy("regression-questions.md", "regression-questions.md"),
+    ]
+    return "\n".join(
+        f'<button class="source-chip" type="button" data-demo-source="{escape_text(source.source or source.label)}">'
+        f'<span class="source-icon">doc</span>{escape_text(source.label)}</button>'
+        for source in sources
+    )
+
+
+class WelcomeItemProxy:
+    def __init__(self, title: str, text: str) -> None:
+        self.title = title
+        self.text = text
+
+
+class WelcomeSourceProxy:
+    def __init__(self, label: str, source: str) -> None:
+        self.label = label
+        self.source = source

@@ -1,3 +1,5 @@
+schema_version = "runtime.v1"
+
 [project]
 prompt_path = "dify/app-prompt.md"
 knowledge_root = "knowledge_base"
@@ -8,6 +10,30 @@ index_path = ".local_rag_agent/index.json"
 chunk_size = 1200
 chunk_overlap = 160
 top_k = 5
+
+[[retrieval.source_boosts]]
+pattern = "课程关键事务问答核查表"
+boost = 18.0
+
+[[retrieval.source_boosts]]
+pattern = "课程核心事实速查"
+boost = 14.0
+
+[[retrieval.source_boosts]]
+pattern = "syllabus"
+boost = 8.0
+
+[[retrieval.source_boosts]]
+pattern = "课程阅读材料与参考书目"
+boost = 6.0
+
+[[retrieval.source_boosts]]
+pattern = "知识库边界与学术诚信说明"
+boost = 4.0
+
+[[retrieval.source_boosts]]
+pattern = "课程问法同义词与意图映射"
+boost = -8.0
 
 [regression]
 output_dir = ".local_rag_agent/regression"
