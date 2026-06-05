@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .adapters.generators import ExtractiveGenerator, OpenAICompatibleGenerator
+from .adapters.retrieval.hybrid import HybridRetriever
+from .adapters.retrieval.sqlite_fts import SQLiteFTSRetriever
 from .adapters.retrievers import LexicalRetriever
 from .config import Settings
 from .policy import PolicyGuard
@@ -62,6 +64,8 @@ class ComponentRegistry:
                 )
             )
         registry.register_retriever("lexical", lambda settings: LexicalRetriever())
+        registry.register_retriever("sqlite_fts", lambda settings: SQLiteFTSRetriever())
+        registry.register_retriever("hybrid", lambda settings: HybridRetriever())
         registry.register_generator("extractive", lambda settings: ExtractiveGenerator())
         registry.register_generator("openai_compatible", lambda settings: OpenAICompatibleGenerator())
         registry.register_policy_provider("keyword", lambda settings: PolicyGuard.from_config(settings.policy_config_path))

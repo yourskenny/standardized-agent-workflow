@@ -15,7 +15,7 @@ from .schema import warn_unknown_fields
 from .tools import load_tools
 from .workflow import WorkflowRegistry, load_workflows
 
-KNOWN_RETRIEVER_PROVIDERS = {"lexical"}
+KNOWN_RETRIEVER_PROVIDERS = {"lexical", "sqlite_fts", "hybrid"}
 KNOWN_GENERATOR_PROVIDERS = {"extractive", "openai_compatible"}
 KNOWN_GENERATION_FALLBACKS = {"extractive"}
 KNOWN_TOOL_PROVIDERS = {"disabled", "mock"}

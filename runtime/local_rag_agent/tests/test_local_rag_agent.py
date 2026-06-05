@@ -2042,6 +2042,27 @@ class ValidatorContractTests(unittest.TestCase):
 
             self.assertTrue(result.ok)
 
+    def test_validate_project_config_accepts_retrieval_v2_providers(self):
+        for provider in ("sqlite_fts", "hybrid"):
+            with self.subTest(provider=provider):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp).resolve()
+                    config_path = root / "runtime.toml"
+                    config_path.write_text(
+                        'schema_version = "runtime.v1"\n'
+                        '[project]\n'
+                        'prompt_path = "agent/system-prompt.md"\n'
+                        'knowledge_root = "knowledge_base"\n'
+                        'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                        '[retrieval]\n'
+                        f'provider = "{provider}"\n',
+                        encoding="utf-8",
+                    )
+
+                    result = validate_project_config(root, config_path)
+
+                    self.assertTrue(result.ok, result.to_dict())
+
     def test_validate_project_config_rejects_unknown_generation_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -2258,6 +2279,42 @@ class ComponentPortTests(unittest.TestCase):
             chunks = RetrieverProvider.from_settings(settings).retrieve(settings, "shared answer")
 
             self.assertEqual(chunks[0]["source"], "boosted.md")
+
+    def test_sqlite_fts_retriever_returns_matching_chunks(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            db_path = root / "chunks.db"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute("CREATE VIRTUAL TABLE chunks_fts USING fts5(chunk_id, source, title, content)")
+                connection.execute(
+                    "INSERT INTO chunks_fts (chunk_id, source, title, content) VALUES (?, ?, ?, ?)",
+                    ("policy.md#0", "policy.md", "Refund policy", "Answer: refunds require approval."),
+                )
+                connection.execute(
+                    "INSERT INTO chunks_fts (chunk_id, source, title, content) VALUES (?, ?, ?, ?)",
+                    ("other.md#0", "other.md", "Other", "Unrelated content."),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            settings = Settings(
+                project_root=root,
+                prompt_path=root / "prompt.md",
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=db_path,
+                retrieval_provider="sqlite_fts",
+                top_k=1,
+            )
+
+            chunks = RetrieverProvider.from_settings(settings).retrieve(settings, "refund approval")
+
+            self.assertEqual(len(chunks), 1)
+            self.assertEqual(chunks[0]["source"], "policy.md")
+            self.assertIn("refunds require approval", chunks[0]["content"])
 
     def test_generator_provider_returns_extractable_generated_answer(self):
         with tempfile.TemporaryDirectory() as tmp:

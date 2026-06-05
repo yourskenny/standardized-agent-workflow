@@ -63,6 +63,14 @@ class RetrieverProvider:
             from .adapters.retrievers import LexicalRetriever
 
             return cls(LexicalRetriever())
+        if provider == "sqlite_fts":
+            from .adapters.retrieval.sqlite_fts import SQLiteFTSRetriever
+
+            return cls(SQLiteFTSRetriever())
+        if provider == "hybrid":
+            from .adapters.retrieval.hybrid import HybridRetriever
+
+            return cls(HybridRetriever())
         raise ValueError(f"Unsupported retriever provider: {provider}")
 
     def retrieve(self, settings: Settings, query: str) -> list[dict[str, object]]:
