@@ -24,6 +24,8 @@ class WorkflowContext:
     tool_provider: ToolProvider = field(default_factory=ToolProvider.disabled)
     retriever_provider: RetrieverProvider | None = None
     generator_provider: GeneratorProvider | None = None
+    run_store: object | None = None
+    run_id: str = ""
     retrieval_query: str = ""
     retrieved_chunks: list[dict[str, object]] = field(default_factory=list)
     workflow_requires_sources: bool | None = None
@@ -57,6 +59,7 @@ class WorkflowPipeline:
         )
         for step in self.steps:
             step(context)
+            _write_checkpoint(context, _step_name(step))
             if context.response is not None:
                 break
         if context.response is None:
@@ -66,3 +69,23 @@ class WorkflowPipeline:
 
 def _step_name(step: WorkflowStep) -> str:
     return getattr(step, "__name__", str(step))
+
+
+def _write_checkpoint(context: WorkflowContext, node_id: str) -> None:
+    if context.run_store is None or not context.run_id:
+        return
+    write_checkpoint = getattr(context.run_store, "write_checkpoint", None)
+    if not callable(write_checkpoint):
+        return
+    write_checkpoint(
+        run_id=context.run_id,
+        node_id=node_id,
+        state={
+            "retrieval_query": context.retrieval_query,
+            "retrieved_chunk_count": len(context.retrieved_chunks),
+            "selected_tool_id": context.selected_tool_id,
+            "tool_result_count": len(context.tool_results),
+            "has_response": context.response is not None,
+        },
+        trace=context.trace.to_dict(),
+    )

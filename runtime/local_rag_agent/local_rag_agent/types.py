@@ -45,6 +45,7 @@ class AgentTrace:
     intent: str
     workflow: str
     request_id: str = ""
+    run_id: str = ""
     steps: list[dict[str, object]] = field(default_factory=list)
     config_versions: dict[str, str] = field(default_factory=dict)
 
@@ -54,6 +55,7 @@ class AgentTrace:
     def to_dict(self) -> dict[str, object]:
         return {
             "request_id": self.request_id,
+            "run_id": self.run_id,
             "intent": self.intent,
             "workflow": self.workflow,
             "config_versions": self.config_versions,

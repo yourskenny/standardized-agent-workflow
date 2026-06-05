@@ -796,6 +796,79 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(event["steps"][0]["name"], "route_intent")
             self.assertEqual(event["steps"][0]["status"], "ok")
 
+    def test_runtime_records_run_id_in_trace_and_optional_store(self):
+        from local_rag_agent.stores.sqlite import SQLiteRunStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text(
+                '{"chunks":[{"chunk_id":"facts.md#0","source":"facts.md","content":"Answer: stored."}]}',
+                encoding="utf-8",
+            )
+            store = SQLiteRunStore.in_memory()
+            self.addCleanup(store.close)
+
+            response = AgentRuntime(settings, run_store=store).run(
+                AgentRequest("store this", metadata={"request_id": "req-store", "thread_id": "thread-1"})
+            )
+
+            self.assertTrue(response.trace.run_id)
+            self.assertEqual(response.trace.request_id, "req-store")
+            run = store.get_run(response.trace.run_id)
+            self.assertEqual(run["run_id"], response.trace.run_id)
+            self.assertEqual(run["thread_id"], "thread-1")
+            self.assertEqual(run["intent"], "knowledge_qa")
+            self.assertEqual(run["workflow"], "rag_qa")
+            self.assertEqual(run["status"], "running")
+            self.assertEqual(run["metadata"], {"request_id": "req-store"})
+
+    def test_runtime_writes_workflow_checkpoints_when_store_is_present(self):
+        from local_rag_agent.stores.sqlite import SQLiteRunStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text(
+                '{"chunks":[{"chunk_id":"facts.md#0","source":"facts.md","content":"Answer: checkpoint this."}]}',
+                encoding="utf-8",
+            )
+            store = SQLiteRunStore.in_memory()
+            self.addCleanup(store.close)
+
+            response = AgentRuntime(settings, run_store=store).run(
+                AgentRequest("checkpoint this", metadata={"run_id": "run-checkpoint"})
+            )
+
+            checkpoints = store.list_checkpoints("run-checkpoint")
+            node_ids = [checkpoint["node_id"] for checkpoint in checkpoints]
+            self.assertIn("prepare_retrieval_query", node_ids)
+            self.assertIn("run_retrieval", node_ids)
+            self.assertIn("build_response", node_ids)
+            retrieval_checkpoint = next(
+                checkpoint for checkpoint in checkpoints if checkpoint["node_id"] == "prepare_retrieval_query"
+            )
+            self.assertEqual(retrieval_checkpoint["state"]["retrieval_query"], "checkpoint this")
+            self.assertEqual(retrieval_checkpoint["trace"]["run_id"], response.trace.run_id)
+
     def test_runtime_writes_structured_log_for_completed_trace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -1110,6 +1183,46 @@ class RuntimeTypeTests(unittest.TestCase):
         self.assertEqual(request.message, "那地点呢？")
         self.assertEqual(request.history, [])
         self.assertEqual(request.metadata, {})
+
+
+class RunStoreTests(unittest.TestCase):
+    def test_sqlite_run_store_creates_runs_and_checkpoints(self):
+        from local_rag_agent.stores.sqlite import SQLiteRunStore
+
+        store = SQLiteRunStore.in_memory()
+        self.addCleanup(store.close)
+
+        store.create_run(
+            run_id="run-1",
+            thread_id="thread-1",
+            intent="knowledge_qa",
+            workflow="rag_qa",
+            status="running",
+            metadata={"request_id": "req-1"},
+        )
+        store.write_checkpoint(
+            run_id="run-1",
+            node_id="run_retrieval",
+            state={"retrieval_query": "hello"},
+            trace={"steps": [{"name": "run_retrieval"}]},
+        )
+
+        self.assertEqual(
+            store.get_run("run-1"),
+            {
+                "run_id": "run-1",
+                "thread_id": "thread-1",
+                "intent": "knowledge_qa",
+                "workflow": "rag_qa",
+                "status": "running",
+                "metadata": {"request_id": "req-1"},
+            },
+        )
+        checkpoints = store.list_checkpoints("run-1")
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(checkpoints[0]["node_id"], "run_retrieval")
+        self.assertEqual(checkpoints[0]["state"], {"retrieval_query": "hello"})
+        self.assertEqual(checkpoints[0]["trace"], {"steps": [{"name": "run_retrieval"}]})
 
 
 class IntentConfigTests(unittest.TestCase):

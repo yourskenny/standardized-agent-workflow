@@ -25,9 +25,11 @@ class AgentRuntime:
         settings: Settings,
         model_client: object | None = None,
         components: ComponentRegistry | None = None,
+        run_store: object | None = None,
     ):
         self.settings = settings
         self.model_client = model_client
+        self.run_store = run_store
         self.components = components or ComponentRegistry.from_settings(settings)
         intents = load_intents(settings.intent_config_path)
         self.intent_router = IntentRouter(
@@ -58,18 +60,27 @@ class AgentRuntime:
         config_path: Path,
         model_client: object | None = None,
         components: ComponentRegistry | None = None,
+        run_store: object | None = None,
     ) -> "AgentRuntime":
-        return cls(load_settings(project_root, config_path), model_client=model_client, components=components)
+        return cls(
+            load_settings(project_root, config_path),
+            model_client=model_client,
+            components=components,
+            run_store=run_store,
+        )
 
     def run(self, request: AgentRequest) -> AgentResponse:
         intent_decision = self.intent_router.route(request.message)
         request_id = _request_id(request)
+        run_id = _run_id(request)
         trace = AgentTrace(
             intent=intent_decision.intent.id,
             workflow=intent_decision.intent.workflow,
             request_id=request_id,
+            run_id=run_id,
             config_versions=self.config_versions,
         )
+        self._create_run(run_id, request_id, request, intent_decision.intent.id, intent_decision.intent.workflow)
         trace.add_step(
             "route_intent",
             {
@@ -92,12 +103,35 @@ class AgentRuntime:
             tool_provider=self.tool_provider,
             retriever_provider=self.retriever_provider,
             generator_provider=self.generator_provider,
+            run_store=self.run_store,
+            run_id=run_id,
         )
         response = workflow.run(context)
         event = _runtime_trace_event(request_id, response)
         self.components.emit_trace(event)
         LOGGER.info("runtime_trace %s", json.dumps(event, ensure_ascii=False, sort_keys=True))
         return response
+
+    def _create_run(
+        self,
+        run_id: str,
+        request_id: str,
+        request: AgentRequest,
+        intent: str,
+        workflow: str,
+    ) -> None:
+        if self.run_store is None:
+            return
+        create_run = getattr(self.run_store, "create_run", None)
+        if callable(create_run):
+            create_run(
+                run_id=run_id,
+                thread_id=str(request.metadata.get("thread_id", "")),
+                intent=intent,
+                workflow=workflow,
+                status="running",
+                metadata={"request_id": request_id},
+            )
 
     @staticmethod
     def build_retrieval_query(question: str, history: list[dict[str, object]] | None = None) -> str:
@@ -126,11 +160,19 @@ def _request_id(request: AgentRequest) -> str:
     return uuid.uuid4().hex
 
 
+def _run_id(request: AgentRequest) -> str:
+    raw_run_id = request.metadata.get("run_id")
+    if raw_run_id is not None and str(raw_run_id).strip():
+        return str(raw_run_id)
+    return uuid.uuid4().hex
+
+
 def _runtime_trace_event(request_id: str, response: AgentResponse) -> dict[str, object]:
     trace = response.trace.to_dict() if response.trace else {}
     return {
         "event": "runtime_trace",
         "request_id": request_id,
+        "run_id": trace.get("run_id", ""),
         "intent": response.intent,
         "workflow": response.workflow,
         "mode": response.mode,
