@@ -50,6 +50,11 @@ from local_rag_agent.workflow import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+RUNTIME_ROOT = REPO_ROOT / "runtime" / "local_rag_agent"
+TEMPLATE_ROOT = REPO_ROOT / "templates" / "agent-project"
+
+
 def load_intents_from_inline(text: str):
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "intents.toml"
@@ -266,7 +271,7 @@ class ConfigAndManifestTests(unittest.TestCase):
         self.assertEqual(entries, ["knowledge_base/public/"])
 
     def test_template_agent_project_includes_structured_intents(self):
-        template_root = Path("templates/agent-project")
+        template_root = TEMPLATE_ROOT
         intent_config = template_root / "agent" / "intents.toml"
 
         intents = load_intents(intent_config)
@@ -278,7 +283,7 @@ class ConfigAndManifestTests(unittest.TestCase):
         self.assertTrue(any(intent.requires_sources for intent in intents if intent.id == "knowledge_qa"))
 
     def test_template_agent_project_includes_structured_runtime_configs(self):
-        template_root = Path("templates/agent-project")
+        template_root = TEMPLATE_ROOT
         runtime_config = template_root / "runtime.toml"
         workflow_config = template_root / "agent" / "workflows.toml"
         policy_config = template_root / "agent" / "policies.toml"
@@ -309,7 +314,7 @@ class ConfigAndManifestTests(unittest.TestCase):
     def test_template_v2_project_validate_ingest_chat_and_regression_smoke(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve() / "agent-project"
-            shutil.copytree(Path("templates/agent-project"), root)
+            shutil.copytree(TEMPLATE_ROOT, root)
             config_path = root / "runtime.toml"
             questions_path = root / "examples" / "core-regression-questions.md"
             regression_output = root / ".local_rag_agent" / "smoke-results.jsonl"
@@ -348,7 +353,7 @@ class ConfigAndManifestTests(unittest.TestCase):
             self.assertTrue(regression_output.exists())
 
     def test_runtime_package_environment_and_container_artifacts_exist(self):
-        runtime_root = Path("runtime/local_rag_agent")
+        runtime_root = RUNTIME_ROOT
         pyproject = runtime_root / "pyproject.toml"
         env_example = runtime_root / ".env.example"
         dockerfile = runtime_root / "Dockerfile"
@@ -365,7 +370,7 @@ class ConfigAndManifestTests(unittest.TestCase):
         self.assertIn("python -m local_rag_agent serve", docker_text)
 
     def test_template_rag_workflow_can_stop_on_policy_decisions(self):
-        workflows = load_workflows(Path("templates/agent-project") / "agent" / "workflows.toml")
+        workflows = load_workflows(TEMPLATE_ROOT / "agent" / "workflows.toml")
         rag_workflow = next(workflow for workflow in workflows if workflow.id == "rag_qa")
 
         self.assertIn("apply_policy", rag_workflow.steps)
@@ -1696,6 +1701,59 @@ class ValidatorContractTests(unittest.TestCase):
             self.assertEqual(result.errors[0].code, "UNKNOWN_WORKFLOW_STEP")
             self.assertIn("missing_step", result.errors[0].detail)
 
+    def test_validate_project_config_accepts_plugin_terminal_step_definition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            agent_dir = root / "agent"
+            plugin_dir = root / "agent_plugins"
+            agent_dir.mkdir()
+            plugin_dir.mkdir()
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+            (plugin_dir / "custom_steps.py").write_text(
+                "from local_rag_agent.components import StepDefinition\n"
+                "from local_rag_agent.types import AgentResponse\n"
+                "\n"
+                "def plugin_response(context):\n"
+                "    context.response = AgentResponse(\n"
+                "        answer='plugin response',\n"
+                "        mode='plugin',\n"
+                "        intent=context.intent_decision.intent.id,\n"
+                "        workflow=context.intent_decision.intent.workflow,\n"
+                "        sources=[],\n"
+                "        trace=context.trace,\n"
+                "    )\n"
+                "\n"
+                "def register(registry):\n"
+                "    registry.register_step_definition(\n"
+                "        StepDefinition(id='plugin.response', fn=plugin_response, terminal=True)\n"
+                "    )\n",
+                encoding="utf-8",
+            )
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'workflow_config = "agent/workflows.toml"\n'
+                '[plugins]\n'
+                'modules = ["agent_plugins.custom_steps"]\n',
+                encoding="utf-8",
+            )
+            (agent_dir / "workflows.toml").write_text(
+                'schema_version = "workflow.v1"\n'
+                '[[workflows]]\n'
+                'id = "plugin_flow"\n'
+                'steps = ["plugin.response"]\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertTrue(result.ok, result.to_dict())
+
     def test_validate_project_config_requires_workflow_terminal_response_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -1859,7 +1917,7 @@ class ValidatorContractTests(unittest.TestCase):
             self.assertIn("crm", result.errors[0].detail)
 
     def test_validate_template_project_runtime_providers_are_known(self):
-        result = validate_project_config(Path("templates/agent-project"), Path("templates/agent-project/runtime.toml"))
+        result = validate_project_config(TEMPLATE_ROOT, TEMPLATE_ROOT / "runtime.toml")
 
         self.assertTrue(result.ok)
 
@@ -2644,6 +2702,30 @@ class ComponentRegistryTests(unittest.TestCase):
             registry.get_generator("missing")
         self.assertIs(registry.get_trace_sink("memory"), sink)
 
+    def test_component_registry_registers_step_definition_metadata(self):
+        from local_rag_agent.components import ComponentRegistry, StepDefinition
+
+        def custom_response(context):
+            context.response = None
+
+        registry = ComponentRegistry()
+        definition = StepDefinition(
+            id="custom.response",
+            fn=custom_response,
+            terminal=True,
+            risk_level="low",
+            timeout_seconds=5,
+        )
+
+        registry.register_step_definition(definition)
+
+        self.assertTrue(registry.has_step("custom.response"))
+        self.assertIs(registry.get_step("custom.response"), custom_response)
+        self.assertEqual(registry.get_step_definition("custom.response").id, "custom.response")
+        self.assertEqual(registry.terminal_steps(), {"custom.response"})
+        with self.assertRaisesRegex(ValueError, "Duplicate component registration: step custom.response"):
+            registry.register_step_definition(definition)
+
     def test_runtime_construction_uses_component_registry_for_steps_and_providers(self):
         from local_rag_agent.components import ComponentRegistry
 
@@ -3016,7 +3098,7 @@ class RegressionTests(unittest.TestCase):
     def test_smoke_cli_runs_template_runtime_gate_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve() / "agent-project"
-            shutil.copytree(Path("templates/agent-project"), root)
+            shutil.copytree(TEMPLATE_ROOT, root)
             config_path = root / "runtime.toml"
             questions_path = root / "examples" / "core-regression-questions.md"
 
@@ -3042,6 +3124,91 @@ class RegressionTests(unittest.TestCase):
             self.assertTrue(payload["release_gate"]["ok"])
             self.assertTrue(payload["http"]["healthz"]["ok"])
             self.assertTrue(payload["http"]["version"]["ok"])
+
+    def test_smoke_cli_accepts_plugin_terminal_workflow_release_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            agent_dir = root / "agent"
+            plugin_dir = root / "agent_plugins"
+            knowledge_dir = root / "knowledge_base"
+            manifest_dir = knowledge_dir / "_manifests"
+            examples_dir = root / "examples"
+            agent_dir.mkdir()
+            plugin_dir.mkdir()
+            manifest_dir.mkdir(parents=True)
+            examples_dir.mkdir()
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+            (plugin_dir / "custom_steps.py").write_text(
+                "from local_rag_agent.components import StepDefinition\n"
+                "from local_rag_agent.types import AgentResponse\n"
+                "\n"
+                "def plugin_response(context):\n"
+                "    context.response = AgentResponse(\n"
+                "        answer='plugin response',\n"
+                "        mode='plugin',\n"
+                "        intent=context.intent_decision.intent.id,\n"
+                "        workflow=context.intent_decision.intent.workflow,\n"
+                "        sources=[],\n"
+                "        trace=context.trace,\n"
+                "    )\n"
+                "\n"
+                "def register(registry):\n"
+                "    registry.register_step_definition(\n"
+                "        StepDefinition(id='plugin.response', fn=plugin_response, terminal=True)\n"
+                "    )\n",
+                encoding="utf-8",
+            )
+            (knowledge_dir / "facts.md").write_text("# Facts\n\nPlugin smoke fact.\n", encoding="utf-8")
+            (manifest_dir / "current-upload-manifest.md").write_text("- `knowledge_base/facts.md`\n", encoding="utf-8")
+            (examples_dir / "plugin-questions.md").write_text(
+                "| 编号 | 问题 | 预期要点 |\n"
+                "| --- | --- | --- |\n"
+                "| P01 | hello plugin? | plugin response |\n",
+                encoding="utf-8",
+            )
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'default_workflow = "plugin_flow"\n'
+                'workflow_config = "agent/workflows.toml"\n'
+                '[plugins]\n'
+                'modules = ["agent_plugins.custom_steps"]\n',
+                encoding="utf-8",
+            )
+            (agent_dir / "workflows.toml").write_text(
+                'schema_version = "workflow.v2"\n'
+                '[[workflows]]\n'
+                'id = "plugin_flow"\n'
+                'requires_sources = false\n'
+                'steps = ["plugin.response"]\n',
+                encoding="utf-8",
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                exit_code = cli_main(
+                    [
+                        "smoke",
+                        "--project",
+                        str(root),
+                        "--config",
+                        str(config_path),
+                        "--questions",
+                        str(examples_dir / "plugin-questions.md"),
+                    ]
+                )
+
+            payload = json.loads(stdout.getvalue())
+
+            self.assertEqual(exit_code, 0, payload)
+            self.assertTrue(payload["validate"]["ok"], payload)
+            self.assertEqual(payload["release_gate"]["modes"], {"plugin": 1})
+            self.assertEqual(payload["release_gate"]["workflows"], {"plugin_flow": 1})
+            self.assertTrue(payload["release_gate"]["ok"], payload["release_gate"])
 
 
 class ServerPageTests(unittest.TestCase):
@@ -3364,9 +3531,9 @@ class CliWorkflowTests(unittest.TestCase):
                 [
                     "validate",
                     "--project",
-                    "templates/agent-project",
+                    str(TEMPLATE_ROOT),
                     "--config",
-                    "templates/agent-project/runtime.toml",
+                    str(TEMPLATE_ROOT / "runtime.toml"),
                 ]
             )
 

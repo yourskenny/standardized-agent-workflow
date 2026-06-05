@@ -49,7 +49,11 @@ class WorkflowPipeline:
         context.workflow_requires_sources = self.requires_sources
         context.trace.add_step(
             "start_workflow",
-            {"workflow": self.workflow_id, "steps": [_step_name(step) for step in self.steps]},
+            {
+                "workflow": self.workflow_id,
+                "steps": [_step_name(step) for step in self.steps],
+                "requires_sources": self.requires_sources,
+            },
         )
         for step in self.steps:
             step(context)

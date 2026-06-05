@@ -5,6 +5,7 @@ import warnings as warning_module
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .components import ComponentRegistry
 from .config import Settings, load_settings
 from .index_store import read_index
 from .intent import IntentRouter, load_intent_tests, load_intents
@@ -12,15 +13,8 @@ from .manifest import expand_manifest_entries
 from .policy import PolicyGuard, load_policies
 from .schema import warn_unknown_fields
 from .tools import load_tools
-from .workflow import StepRegistry, WorkflowRegistry, load_workflows
+from .workflow import WorkflowRegistry, load_workflows
 
-TERMINAL_RESPONSE_STEPS = {
-    "build_policy_response",
-    "build_response",
-    "build_retrieval_debug_response",
-    "build_refusal_response",
-    "response.tool_result",
-}
 KNOWN_RETRIEVER_PROVIDERS = {"lexical"}
 KNOWN_GENERATOR_PROVIDERS = {"extractive", "openai_compatible"}
 KNOWN_GENERATION_FALLBACKS = {"extractive"}
@@ -64,13 +58,17 @@ def validate_project_contract(settings: Settings) -> ValidationResult:
 
     intents = load_intents(settings.intent_config_path)
     workflow_definitions = load_workflows(settings.workflow_config_path)
-    errors.extend(_validate_workflow_definitions(settings, workflow_definitions))
+    component_registry = ComponentRegistry.from_settings(settings)
+    errors.extend(_validate_workflow_definitions(settings, workflow_definitions, component_registry))
     errors.extend(_validate_runtime_providers(settings))
     errors.extend(_validate_tool_providers(settings))
     errors.extend(_validate_manifest_and_index(settings))
     if errors:
         return ValidationResult(errors=errors, warnings=warnings)
-    workflow_registry = WorkflowRegistry.from_config(settings.workflow_config_path)
+    workflow_registry = WorkflowRegistry.from_config(
+        settings.workflow_config_path,
+        step_registry=component_registry.step_registry(),
+    )
     policy_guard = PolicyGuard.from_config(settings.policy_config_path)
 
     for intent in intents:
@@ -167,9 +165,14 @@ def _validate_tool_providers(settings: Settings) -> list[ValidationIssue]:
     return errors
 
 
-def _validate_workflow_definitions(settings: Settings, workflow_definitions: object) -> list[ValidationIssue]:
+def _validate_workflow_definitions(
+    settings: Settings,
+    workflow_definitions: object,
+    component_registry: ComponentRegistry,
+) -> list[ValidationIssue]:
     errors: list[ValidationIssue] = []
-    steps = StepRegistry.builtins()
+    steps = component_registry.step_registry()
+    terminal_steps = component_registry.terminal_steps()
     for definition in workflow_definitions:
         for step_id in definition.steps:
             if not steps.has(step_id):
@@ -193,7 +196,7 @@ def _validate_workflow_definitions(settings: Settings, workflow_definitions: obj
                     )
                 )
         terminal_candidates = definition.terminal_steps or definition.steps
-        if not any(step_id in TERMINAL_RESPONSE_STEPS for step_id in terminal_candidates):
+        if not any(step_id in terminal_steps for step_id in terminal_candidates):
             errors.append(
                 ValidationIssue(
                     code="NO_TERMINAL_RESPONSE_PATH",

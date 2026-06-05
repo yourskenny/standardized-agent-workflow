@@ -83,7 +83,7 @@ def summarize_regression_report(path: Path) -> dict[str, object]:
             tool_trace_count += 1
         sources = record.get("sources", [])
         has_sources = isinstance(sources, list) and bool(sources)
-        if not has_sources and mode not in {"refusal", "no_evidence", "tool", "tool_error"}:
+        if not has_sources and _requires_sources_for_record(record, workflow, mode):
             missing_source_count += 1
             _append_failure(failures, record, "missing_sources", mode)
 
@@ -140,3 +140,15 @@ def _requires_policy_trace(workflow: str, mode: str) -> bool:
 
 def _requires_tool_trace(workflow: str, mode: str) -> bool:
     return workflow.startswith("tool") or mode in {"tool", "tool_error"}
+
+
+def _requires_sources_for_record(record: dict[str, object], workflow: str, mode: str) -> bool:
+    trace = record.get("trace", {})
+    steps = trace.get("steps", []) if isinstance(trace, dict) else []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("name") != "start_workflow":
+            continue
+        detail = step.get("detail", {})
+        if isinstance(detail, dict) and detail.get("requires_sources") is False:
+            return False
+    return mode not in {"refusal", "no_evidence", "tool", "tool_error"}

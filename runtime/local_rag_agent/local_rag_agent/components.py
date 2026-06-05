@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import importlib
 import sys
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from .adapters.generators import ExtractiveGenerator, OpenAICompatibleGenerator
 from .adapters.retrievers import LexicalRetriever
@@ -19,9 +20,23 @@ PolicyFactory = Callable[[Settings], object]
 ToolFactory = Callable[[Settings], object]
 
 
+@dataclass(frozen=True)
+class StepDefinition:
+    id: str
+    fn: WorkflowStep
+    description: str = ""
+    terminal: bool = False
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    output_schema: dict[str, Any] = field(default_factory=dict)
+    risk_level: str = "low"
+    timeout_seconds: float | None = None
+    checkpoint_after: bool = False
+
+
 class ComponentRegistry:
     def __init__(self):
         self._steps: dict[str, WorkflowStep] = {}
+        self._step_definitions: dict[str, StepDefinition] = {}
         self._retrievers: dict[str, RetrieverFactory] = {}
         self._generators: dict[str, GeneratorFactory] = {}
         self._policy_providers: dict[str, PolicyFactory] = {}
@@ -32,7 +47,20 @@ class ComponentRegistry:
     def builtins(cls) -> "ComponentRegistry":
         registry = cls()
         for step_id, step in StepRegistry.builtins().steps.items():
-            registry.register_step(step_id, step)
+            registry.register_step_definition(
+                StepDefinition(
+                    id=step_id,
+                    fn=step,
+                    terminal=step_id
+                    in {
+                        "build_policy_response",
+                        "build_response",
+                        "build_retrieval_debug_response",
+                        "build_refusal_response",
+                        "response.tool_result",
+                    },
+                )
+            )
         registry.register_retriever("lexical", lambda settings: LexicalRetriever())
         registry.register_generator("extractive", lambda settings: ExtractiveGenerator())
         registry.register_generator("openai_compatible", lambda settings: OpenAICompatibleGenerator())
@@ -58,6 +86,7 @@ class ComponentRegistry:
             inserted = True
         try:
             importlib.invalidate_caches()
+            self._clear_plugin_module_cache(module_name)
             module = importlib.import_module(module_name)
         finally:
             if inserted:
@@ -70,11 +99,38 @@ class ComponentRegistry:
             raise ValueError(f"Plugin module must expose register(registry): {module_name}")
         register(self)
 
-    def register_step(self, name: str, step: WorkflowStep) -> None:
-        self._register(self._steps, "step", name, step)
+    def register_step(self, name: str | StepDefinition, step: WorkflowStep | None = None) -> None:
+        if isinstance(name, StepDefinition):
+            self.register_step_definition(name)
+            return
+        if step is None:
+            raise ValueError(f"Step registration requires a callable: {name}")
+        self.register_step_definition(StepDefinition(id=name, fn=step))
+
+    def register_step_definition(self, definition: StepDefinition) -> None:
+        if definition.id in self._steps:
+            raise ValueError(f"Duplicate component registration: step {definition.id}")
+        self._steps[definition.id] = definition.fn
+        self._step_definitions[definition.id] = definition
+
+    def has_step(self, name: str) -> bool:
+        return name in self._steps
 
     def get_step(self, name: str) -> WorkflowStep:
         return self._get(self._steps, "step", name)
+
+    def get_step_definition(self, name: str) -> StepDefinition:
+        return self._get(self._step_definitions, "step", name)
+
+    def step_definitions(self) -> dict[str, StepDefinition]:
+        return dict(self._step_definitions)
+
+    def terminal_steps(self) -> set[str]:
+        return {
+            step_id
+            for step_id, definition in self._step_definitions.items()
+            if definition.terminal
+        }
 
     def step_registry(self) -> StepRegistry:
         return StepRegistry(dict(self._steps))
@@ -128,6 +184,12 @@ class ComponentRegistry:
                 emit(event)
             elif callable(sink):
                 sink(event)
+
+    @staticmethod
+    def _clear_plugin_module_cache(module_name: str) -> None:
+        parts = module_name.split(".")
+        for index in range(len(parts), 0, -1):
+            sys.modules.pop(".".join(parts[:index]), None)
 
     @staticmethod
     def _register(bucket: dict[str, object], kind: str, name: str, value: object) -> None:
