@@ -9,6 +9,7 @@ Thumbs.db
 # Runtime and secrets
 .env
 .env.*
+!.env.example
 *.log
 
 # Generated

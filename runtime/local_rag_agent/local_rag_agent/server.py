@@ -1,23 +1,69 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
+from . import __version__
 from .cli import chat_question
 from .config import Settings
+from .runtime import AgentRuntime
+from .types import AgentRequest
 from .ui import UiConfig, load_ui_config
+from .validator import validate_project_config, validate_project_contract
+
+SecurityHook = Callable[[BaseHTTPRequestHandler, Settings], bool]
+
+
+@dataclass(frozen=True)
+class ServerHooks:
+    authenticate: SecurityHook | None = None
+    rate_limit: SecurityHook | None = None
+
+
+class RequestTooLarge(ValueError):
+    pass
 
 
 def run_server(settings: Settings, port: int = 8765) -> None:
-    ui = load_ui_config(settings.ui_config_path)
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(settings))
+    print(f"Local RAG agent server listening at http://127.0.0.1:{port}")
+    server.serve_forever()
+
+
+def make_handler(
+    settings: Settings,
+    ui: UiConfig | None = None,
+    hooks: ServerHooks | None = None,
+) -> type[BaseHTTPRequestHandler]:
+    ui = ui or load_ui_config(settings.ui_config_path)
+    hooks = hooks or ServerHooks()
 
     class Handler(BaseHTTPRequestHandler):
+        def setup(self) -> None:
+            super().setup()
+            if settings.server_timeout_seconds > 0:
+                self.connection.settimeout(settings.server_timeout_seconds)
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/":
                 self._send_html(render_workspace_home(ui))
+                return
+            if parsed.path == "/healthz":
+                self._send_json({"status": "ok", "service": "local_rag_agent"})
+                return
+            if parsed.path == "/version":
+                self._send_json({"service": "local_rag_agent", "version": __version__})
+                return
+            if parsed.path == "/api/v1/validate":
+                if not self._guard_api_request():
+                    return
+                self._send_json(_validate_payload(settings))
                 return
             if parsed.path in {"/chatbot", "/chatbot/"}:
                 self._send_html(render_chat_page(ui=ui))
@@ -29,6 +75,11 @@ def run_server(settings: Settings, port: int = 8765) -> None:
             self.send_error(404)
 
         def do_POST(self) -> None:
+            if self.path == "/api/v1/chat":
+                if not self._guard_api_request():
+                    return
+                self._send_chat_v1_response()
+                return
             if self.path != "/api/chat":
                 self.send_error(404)
                 return
@@ -43,13 +94,98 @@ def run_server(settings: Settings, port: int = 8765) -> None:
         def log_message(self, format: str, *args: object) -> None:
             return
 
-        def _send_json(self, payload: dict[str, object]) -> None:
+        def do_OPTIONS(self) -> None:
+            origin = self.headers.get("Origin", "")
+            self.send_response(204)
+            self._send_cors_headers(origin)
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.end_headers()
+
+        def _send_json(self, payload: dict[str, object], status: int = 200) -> None:
             body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self._send_cors_headers(self.headers.get("Origin", ""))
             self.end_headers()
             self.wfile.write(body)
+
+        def _send_cors_headers(self, origin: str) -> None:
+            if origin and origin in settings.server_cors_allowlist:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+
+        def _send_error_json(self, status: int, code: str, message: str) -> None:
+            self._send_json({"error": {"code": code, "message": message}}, status=status)
+
+        def _read_json_body(self) -> dict[str, object]:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > settings.server_request_body_limit_bytes:
+                raise RequestTooLarge(
+                    f"request body exceeds limit of {settings.server_request_body_limit_bytes} bytes"
+                )
+            body = self.rfile.read(length).decode("utf-8")
+            if not body:
+                return {}
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                raise ValueError("request body must be a JSON object")
+            return data
+
+        def _send_chat_v1_response(self) -> None:
+            try:
+                data = self._read_json_body()
+            except RequestTooLarge as error:
+                self._send_error_json(413, "REQUEST_TOO_LARGE", str(error))
+                return
+            except (json.JSONDecodeError, ValueError) as error:
+                self._send_error_json(400, "BAD_REQUEST", str(error))
+                return
+            message = str(data.get("message", "")).strip()
+            if not message:
+                self._send_error_json(400, "BAD_REQUEST", "message is required")
+                return
+            history = data.get("history", [])
+            if not isinstance(history, list):
+                history = []
+            metadata = data.get("metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            try:
+                response = AgentRuntime(settings).run(
+                    AgentRequest(message=message, history=history, metadata=metadata)
+                )
+            except Exception as error:  # pragma: no cover - integration failures depend on project config
+                self._send_error_json(500, "RUNTIME_ERROR", str(error))
+                return
+            self._send_json(response.to_dict())
+
+        def _guard_api_request(self) -> bool:
+            if hooks.authenticate is not None:
+                if not hooks.authenticate(self, settings):
+                    self._send_error_json(401, "AUTH_REQUIRED", "authentication required")
+                    return False
+            elif not self._default_authenticated():
+                self._send_error_json(401, "AUTH_REQUIRED", "authentication required")
+                return False
+            if hooks.rate_limit is not None and not hooks.rate_limit(self, settings):
+                self._send_error_json(429, "RATE_LIMITED", "rate limit exceeded")
+                return False
+            return True
+
+        def _default_authenticated(self) -> bool:
+            if not settings.server_auth_token and not settings.server_basic_auth_username:
+                return True
+            authorization = self.headers.get("Authorization", "")
+            if settings.server_auth_token and authorization == f"Bearer {settings.server_auth_token}":
+                return True
+            if settings.server_basic_auth_username:
+                expected = base64.b64encode(
+                    f"{settings.server_basic_auth_username}:{settings.server_basic_auth_password}".encode("utf-8")
+                ).decode("ascii")
+                return authorization == f"Basic {expected}"
+            return False
 
         def _send_chat_response(self, callback: object) -> None:
             try:
@@ -73,9 +209,13 @@ def run_server(settings: Settings, port: int = 8765) -> None:
             self.end_headers()
             self.wfile.write(body)
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Local RAG agent server listening at http://127.0.0.1:{port}")
-    server.serve_forever()
+    return Handler
+
+
+def _validate_payload(settings: Settings) -> dict[str, object]:
+    if settings.config_path is not None:
+        return validate_project_config(settings.project_root, settings.config_path).to_dict()
+    return validate_project_contract(settings).to_dict()
 
 
 def render_chat_page(title: str | None = None, ui: UiConfig | None = None) -> str:

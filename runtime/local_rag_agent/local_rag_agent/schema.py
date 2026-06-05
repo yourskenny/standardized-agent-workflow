@@ -5,9 +5,9 @@ from pathlib import Path
 
 
 SUPPORTED_SCHEMA_VERSIONS = {
-    "intent": {"intent.v1"},
-    "policy": {"policy.v1"},
-    "tool": {"tool.v1"},
+    "intent": {"intent.v1", "intent.v2"},
+    "policy": {"policy.v1", "policy.v2"},
+    "tool": {"tool.v1", "tool.v2"},
 }
 
 

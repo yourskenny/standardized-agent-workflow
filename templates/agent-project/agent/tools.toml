@@ -1,14 +1,21 @@
-schema_version = "tool.v1"
+schema_version = "tool.v2"
 
 [[tools]]
 id = "example_disabled_tool"
 description = "Placeholder for a future project-specific tool. Keep disabled until an implementation is wired into ToolProvider."
 enabled = false
-provider = "disabled"
+adapter = "disabled"
 allowed_intents = []
 risk_level = "low"
 timeout_seconds = 8
 max_output_bytes = 20000
+requires_approval = false
 
-[tools.schema]
+[tools.input_mapping]
+query = "$message"
+
+[tools.input_schema]
+type = "object"
+
+[tools.output_schema]
 type = "object"

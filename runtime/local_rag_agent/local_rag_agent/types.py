@@ -44,14 +44,16 @@ class SourceReference:
 class AgentTrace:
     intent: str
     workflow: str
+    request_id: str = ""
     steps: list[dict[str, object]] = field(default_factory=list)
     config_versions: dict[str, str] = field(default_factory=dict)
 
-    def add_step(self, name: str, detail: dict[str, object] | None = None) -> None:
-        self.steps.append({"name": name, "detail": detail or {}})
+    def add_step(self, name: str, detail: dict[str, object] | None = None, status: str = "ok") -> None:
+        self.steps.append({"name": name, "status": status, "detail": detail or {}})
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "request_id": self.request_id,
             "intent": self.intent,
             "workflow": self.workflow,
             "config_versions": self.config_versions,

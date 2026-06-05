@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import logging
+import uuid
 from pathlib import Path
 
+from .components import ComponentRegistry
 from .config import Settings, load_settings
 from .intent import IntentRouter, load_intents
 from .policy import PolicyGuard
@@ -12,23 +16,33 @@ from .workflow import WorkflowContext, WorkflowRegistry, build_retrieval_query a
 
 DEFAULT_INTENT = "knowledge_qa"
 DEFAULT_WORKFLOW = "rag_qa"
+LOGGER = logging.getLogger(__name__)
 
 
 class AgentRuntime:
-    def __init__(self, settings: Settings, model_client: object | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        model_client: object | None = None,
+        components: ComponentRegistry | None = None,
+    ):
         self.settings = settings
         self.model_client = model_client
+        self.components = components or ComponentRegistry.from_settings(settings)
         intents = load_intents(settings.intent_config_path)
         self.intent_router = IntentRouter(
             intents,
             default_intent=settings.default_intent,
             default_workflow=settings.default_workflow,
         )
-        self.workflow_registry = WorkflowRegistry.from_config(settings.workflow_config_path)
-        self.policy_guard = PolicyGuard.from_config(settings.policy_config_path)
-        self.tool_provider = ToolProvider.from_config(settings.tool_config_path)
-        self.retriever_provider = RetrieverProvider.from_settings(settings)
-        self.generator_provider = GeneratorProvider.from_settings(settings)
+        self.workflow_registry = WorkflowRegistry.from_config(
+            settings.workflow_config_path,
+            step_registry=self.components.step_registry(),
+        )
+        self.policy_guard = self.components.build_policy_guard(settings)
+        self.tool_provider = self.components.build_tool_provider(settings)
+        self.retriever_provider = self.components.build_retriever_provider(settings)
+        self.generator_provider = self.components.build_generator_provider(settings)
         self.config_versions = _merge_config_versions(
             settings.config_schema_versions or {},
             _first_schema_version("intent", intents),
@@ -43,14 +57,17 @@ class AgentRuntime:
         project_root: Path,
         config_path: Path,
         model_client: object | None = None,
+        components: ComponentRegistry | None = None,
     ) -> "AgentRuntime":
-        return cls(load_settings(project_root, config_path), model_client=model_client)
+        return cls(load_settings(project_root, config_path), model_client=model_client, components=components)
 
     def run(self, request: AgentRequest) -> AgentResponse:
         intent_decision = self.intent_router.route(request.message)
+        request_id = _request_id(request)
         trace = AgentTrace(
             intent=intent_decision.intent.id,
             workflow=intent_decision.intent.workflow,
+            request_id=request_id,
             config_versions=self.config_versions,
         )
         trace.add_step(
@@ -61,7 +78,10 @@ class AgentRuntime:
                 "matched_terms": intent_decision.matched_terms,
             },
         )
-        workflow = self.workflow_registry.get(intent_decision.intent.workflow)
+        workflow = self.workflow_registry.get(
+            intent_decision.intent.workflow,
+            allow_fallback=self.settings.allow_workflow_fallback,
+        )
         context = WorkflowContext(
             settings=self.settings,
             request=request,
@@ -73,7 +93,11 @@ class AgentRuntime:
             retriever_provider=self.retriever_provider,
             generator_provider=self.generator_provider,
         )
-        return workflow.run(context)
+        response = workflow.run(context)
+        event = _runtime_trace_event(request_id, response)
+        self.components.emit_trace(event)
+        LOGGER.info("runtime_trace %s", json.dumps(event, ensure_ascii=False, sort_keys=True))
+        return response
 
     @staticmethod
     def build_retrieval_query(question: str, history: list[dict[str, object]] | None = None) -> str:
@@ -93,3 +117,23 @@ def _merge_config_versions(*items: dict[str, str]) -> dict[str, str]:
     for item in items:
         versions.update(item)
     return versions
+
+
+def _request_id(request: AgentRequest) -> str:
+    raw_request_id = request.metadata.get("request_id")
+    if raw_request_id is not None and str(raw_request_id).strip():
+        return str(raw_request_id)
+    return uuid.uuid4().hex
+
+
+def _runtime_trace_event(request_id: str, response: AgentResponse) -> dict[str, object]:
+    trace = response.trace.to_dict() if response.trace else {}
+    return {
+        "event": "runtime_trace",
+        "request_id": request_id,
+        "intent": response.intent,
+        "workflow": response.workflow,
+        "mode": response.mode,
+        "config_versions": trace.get("config_versions", {}),
+        "steps": trace.get("steps", []),
+    }

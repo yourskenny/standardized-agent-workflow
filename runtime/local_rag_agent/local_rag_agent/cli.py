@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import urllib.error
 import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from .chunking import chunk_markdown
@@ -15,6 +17,7 @@ from .ports import RetrieverProvider
 from .regression import parse_regression_questions, run_regression, summarize_regression_report
 from .runtime import AgentRuntime
 from .types import AgentRequest
+from .validator import validate_project_config
 from .workflow import WorkflowRegistry
 
 
@@ -78,17 +81,52 @@ def demo_check(settings: Settings, dify_url: str | None = None) -> dict[str, obj
     }
 
 
+def smoke_project(settings: Settings, config_path: Path, questions_path: Path) -> dict[str, object]:
+    validation = validate_project_config(settings.project_root, config_path)
+    if not validation.ok:
+        return {"ok": False, "stage": "validate", "validate": validation.to_dict()}
+
+    ingest_result = ingest_project(settings)
+    output_dir = settings.regression_output_dir or settings.project_root / ".local_rag_agent" / "regression"
+    regression_output = output_dir / f"{questions_path.stem}-smoke.jsonl"
+    question_count = run_regression(
+        questions_path,
+        regression_output,
+        lambda question: chat_question(settings, question),
+    )
+    release_gate = summarize_regression_report(regression_output)
+    http_probe = _probe_http(settings)
+    ok = bool(release_gate.get("ok")) and bool(http_probe["healthz"].get("ok")) and bool(http_probe["version"].get("ok"))
+    return {
+        "ok": ok,
+        "validate": validation.to_dict(),
+        "ingest": ingest_result,
+        "regression": {"question_count": question_count, "output": str(regression_output)},
+        "release_gate": release_gate,
+        "http": http_probe,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_output_stream(sys.stdout)
     configure_output_stream(sys.stderr)
     parser = argparse.ArgumentParser(prog="local_rag_agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("ingest", "retrieve", "chat", "serve", "regression", "demo-check", "release-gate"):
+    for command in (
+        "ingest",
+        "retrieve",
+        "chat",
+        "serve",
+        "regression",
+        "demo-check",
+        "validate",
+        "release-gate",
+        "smoke",
+    ):
         subparser = subparsers.add_parser(command)
-        if command != "release-gate":
-            subparser.add_argument("--project", required=True, type=Path)
-            subparser.add_argument("--config", required=True, type=Path)
+        subparser.add_argument("--project", required=True, type=Path)
+        subparser.add_argument("--config", required=True, type=Path)
         if command in {"retrieve", "chat"}:
             subparser.add_argument("question")
         if command == "serve":
@@ -96,13 +134,15 @@ def main(argv: list[str] | None = None) -> int:
         if command == "regression":
             subparser.add_argument("--questions", required=True, type=Path)
             subparser.add_argument("--output", type=Path)
+        if command == "smoke":
+            subparser.add_argument("--questions", required=True, type=Path)
         if command == "demo-check":
             subparser.add_argument("--dify-url")
         if command == "release-gate":
             subparser.add_argument("--report", required=True, type=Path)
 
     args = parser.parse_args(argv)
-    settings = load_settings(args.project, args.config) if args.command != "release-gate" else None
+    settings = load_settings(args.project, args.config) if args.command not in {"validate", "release-gate"} else None
 
     if args.command == "ingest":
         print(json.dumps(ingest_project(settings), ensure_ascii=False, indent=2))
@@ -140,10 +180,30 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(demo_check(settings, args.dify_url), ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "validate":
+        result = validate_project_config(args.project, args.config)
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        return 0 if result.ok else 1
+
     if args.command == "release-gate":
+        validation = validate_project_config(args.project, args.config)
+        if not validation.ok:
+            print(
+                json.dumps(
+                    {"stage": "validate", "validation": validation.to_dict()},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 1
         summary = summarize_regression_report(args.report)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0 if summary["ok"] else 1
+
+    if args.command == "smoke":
+        result = smoke_project(settings, args.config, args.questions)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["ok"] else 1
 
     parser.error(f"Unknown command: {args.command}")
     return 2
@@ -205,3 +265,21 @@ def _check_url(url: str) -> dict[str, object]:
         return {"url": url, "ok": False, "status": error.code, "error": str(error)}
     except urllib.error.URLError as error:
         return {"url": url, "ok": False, "error": str(error.reason)}
+
+
+def _probe_http(settings: Settings) -> dict[str, dict[str, object]]:
+    from .server import make_handler
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(settings))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        return {
+            "healthz": _check_url(f"{base_url}/healthz"),
+            "version": _check_url(f"{base_url}/version"),
+        }
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()

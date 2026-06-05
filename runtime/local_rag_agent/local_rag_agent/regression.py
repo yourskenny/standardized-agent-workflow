@@ -63,6 +63,20 @@ def summarize_regression_report(path: Path) -> dict[str, object]:
         workflows[workflow] = workflows.get(workflow, 0) + 1
         trace = record.get("trace", {})
         steps = trace.get("steps", []) if isinstance(trace, dict) else []
+        step_names = [str(step.get("name", "")) for step in steps if isinstance(step, dict)]
+        config_versions = trace.get("config_versions", {}) if isinstance(trace, dict) else {}
+        if not isinstance(config_versions, dict) or not config_versions:
+            _append_failure(failures, record, "missing_config_versions", mode)
+        if "route_intent" not in step_names:
+            _append_failure(failures, record, "missing_route_intent_trace", mode)
+        if "start_workflow" not in step_names:
+            _append_failure(failures, record, "missing_start_workflow_trace", mode)
+        if _requires_retrieval_trace(workflow, mode) and "run_retrieval" not in step_names:
+            _append_failure(failures, record, "missing_retrieval_trace", mode)
+        if _requires_policy_trace(workflow, mode) and "apply_policy" not in step_names:
+            _append_failure(failures, record, "missing_policy_trace", mode)
+        if _requires_tool_trace(workflow, mode) and not any(name.startswith("tool.") for name in step_names):
+            _append_failure(failures, record, "missing_tool_trace", mode)
         if any(isinstance(step, dict) and step.get("name") == "apply_policy" for step in steps):
             policy_trace_count += 1
         if any(isinstance(step, dict) and str(step.get("name", "")).startswith("tool.") for step in steps):
@@ -71,14 +85,7 @@ def summarize_regression_report(path: Path) -> dict[str, object]:
         has_sources = isinstance(sources, list) and bool(sources)
         if not has_sources and mode not in {"refusal", "no_evidence", "tool", "tool_error"}:
             missing_source_count += 1
-            failures.append(
-                {
-                    "id": record.get("id", ""),
-                    "question": record.get("question", ""),
-                    "reason": "missing_sources",
-                    "mode": mode,
-                }
-            )
+            _append_failure(failures, record, "missing_sources", mode)
 
     return {
         "ok": not failures,
@@ -105,3 +112,31 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
         if isinstance(item, dict):
             records.append(item)
     return records
+
+
+def _append_failure(
+    failures: list[dict[str, object]],
+    record: dict[str, object],
+    reason: str,
+    mode: str,
+) -> None:
+    failures.append(
+        {
+            "id": record.get("id", ""),
+            "question": record.get("question", ""),
+            "reason": reason,
+            "mode": mode,
+        }
+    )
+
+
+def _requires_retrieval_trace(workflow: str, mode: str) -> bool:
+    return workflow == "rag_qa" and mode not in {"refusal", "tool", "tool_error"}
+
+
+def _requires_policy_trace(workflow: str, mode: str) -> bool:
+    return workflow in {"rag_qa", "refusal_with_guidance"} or mode in {"refusal", "no_evidence"}
+
+
+def _requires_tool_trace(workflow: str, mode: str) -> bool:
+    return workflow.startswith("tool") or mode in {"tool", "tool_error"}

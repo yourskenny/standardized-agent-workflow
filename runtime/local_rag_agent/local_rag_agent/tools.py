@@ -14,10 +14,15 @@ class ToolDefinition:
     description: str = ""
     enabled: bool = False
     provider: str = "disabled"
+    adapter: str = "disabled"
     allowed_intents: list[str] = field(default_factory=list)
     risk_level: str = "low"
     timeout_seconds: int = 10
     max_output_bytes: int = 20000
+    requires_approval: bool = False
+    input_mapping: dict[str, Any] = field(default_factory=dict)
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    output_schema: dict[str, Any] = field(default_factory=dict)
     schema: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: str = ""
@@ -43,49 +48,21 @@ def load_tools(path: Path | None) -> list[ToolDefinition]:
     return [_tool_from_record(record, path, schema_version) for record in records if isinstance(record, dict)]
 
 
-class ToolProvider:
-    def __init__(self, tools: list[ToolDefinition]):
-        self.tools = {tool.id: tool for tool in tools}
-
-    @classmethod
-    def disabled(cls) -> "ToolProvider":
-        return cls([])
-
-    @classmethod
-    def from_config(cls, path: Path | None) -> "ToolProvider":
-        return cls(load_tools(path))
-
-    def call(
-        self,
-        tool_id: str,
-        arguments: dict[str, object],
-        intent_id: str = "",
-    ) -> ToolResult:
-        tool = self.tools.get(tool_id)
-        if tool is None:
-            return ToolResult(tool_id=tool_id, ok=False, error=f"Tool is disabled or unavailable: {tool_id}")
-        if not tool.enabled:
-            return ToolResult(tool_id=tool_id, ok=False, error=f"Tool is disabled: {tool_id}")
-        if tool.allowed_intents and intent_id not in tool.allowed_intents:
-            return ToolResult(tool_id=tool_id, ok=False, error=f"Tool is not allowed for intent: {intent_id}")
-        if tool.provider == "mock":
-            output = tool.metadata.get("mock_output", {})
-            if not isinstance(output, dict):
-                output = {}
-            return ToolResult(tool_id=tool_id, ok=True, output=_bounded_output(output, tool.max_output_bytes))
-        return ToolResult(tool_id=tool_id, ok=False, error=f"Tool provider is not implemented: {tool_id}")
-
-
 def _tool_from_record(record: dict[str, object], path: Path, schema_version: str) -> ToolDefinition:
     known_fields = {
         "id",
         "description",
         "enabled",
         "provider",
+        "adapter",
         "allowed_intents",
         "risk_level",
         "timeout_seconds",
         "max_output_bytes",
+        "requires_approval",
+        "input_mapping",
+        "input_schema",
+        "output_schema",
         "schema",
         "mock_output",
     }
@@ -94,16 +71,27 @@ def _tool_from_record(record: dict[str, object], path: Path, schema_version: str
     if not tool_id:
         raise ValueError(f"Tool missing id in {path}")
     enabled = record.get("enabled", False)
+    adapter = str(record.get("adapter", record.get("provider", "disabled"))).strip() or "disabled"
+    provider = str(record.get("provider", adapter)).strip() or adapter
     schema = record.get("schema", {})
+    input_mapping = record.get("input_mapping", {})
+    input_schema = record.get("input_schema", {})
+    output_schema = record.get("output_schema", {})
+    requires_approval = record.get("requires_approval", False)
     return ToolDefinition(
         id=tool_id,
         description=str(record.get("description", "")),
         enabled=enabled if isinstance(enabled, bool) else False,
-        provider=str(record.get("provider", "disabled")),
+        provider=provider,
+        adapter=adapter,
         allowed_intents=_string_list(record.get("allowed_intents", [])),
         risk_level=str(record.get("risk_level", "low")),
         timeout_seconds=int(record.get("timeout_seconds", 10)),
         max_output_bytes=int(record.get("max_output_bytes", 20000)),
+        requires_approval=requires_approval if isinstance(requires_approval, bool) else False,
+        input_mapping=input_mapping if isinstance(input_mapping, dict) else {},
+        input_schema=input_schema if isinstance(input_schema, dict) else {},
+        output_schema=output_schema if isinstance(output_schema, dict) else {},
         schema=schema if isinstance(schema, dict) else {},
         metadata={
             key: value
@@ -114,10 +102,15 @@ def _tool_from_record(record: dict[str, object], path: Path, schema_version: str
                 "description",
                 "enabled",
                 "provider",
+                "adapter",
                 "allowed_intents",
                 "risk_level",
                 "timeout_seconds",
                 "max_output_bytes",
+                "requires_approval",
+                "input_mapping",
+                "input_schema",
+                "output_schema",
                 "schema",
             }
         },
@@ -131,8 +124,18 @@ def _string_list(value: object) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _bounded_output(output: dict[str, Any], max_output_bytes: int) -> dict[str, Any]:
-    text = str(output)
-    if len(text.encode("utf-8")) <= max_output_bytes:
-        return dict(output)
-    return {"truncated": True, "text": text[:max_output_bytes]}
+def __getattr__(name: str) -> object:
+    if name in {"ToolProvider", "ConfiguredToolProvider"}:
+        from .adapters.tools import ConfiguredToolProvider
+
+        return ConfiguredToolProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "ConfiguredToolProvider",
+    "ToolDefinition",
+    "ToolProvider",
+    "ToolResult",
+    "load_tools",
+]

@@ -3,10 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .agent import answer_question
 from .config import Settings
-from .index_store import read_index
-from .retrieval import rank_chunks
 
 
 class RetrieverPort(Protocol):
@@ -26,43 +23,32 @@ class GeneratorPort(Protocol):
         ...
 
 
+class PolicyPort(Protocol):
+    def evaluate(
+        self,
+        message: str,
+        intent_decision: object,
+        retrieved_chunks: list[dict[str, object]] | None = None,
+        require_sources: bool = False,
+    ) -> object:
+        ...
+
+
+class ToolPort(Protocol):
+    def call(
+        self,
+        tool_id: str,
+        arguments: dict[str, object],
+        intent_id: str = "",
+    ) -> object:
+        ...
+
+
 @dataclass(frozen=True)
 class GeneratedAnswer:
     answer: str
     mode: str
     sources: list[dict[str, object]]
-
-
-class LexicalRetriever:
-    def retrieve(self, settings: Settings, query: str) -> list[dict[str, object]]:
-        payload = read_index(settings)
-        chunks = payload.get("chunks", [])
-        if not isinstance(chunks, list):
-            raise ValueError(f"Invalid index format: {settings.index_path}")
-        return rank_chunks(
-            query,
-            chunks,
-            settings.top_k,
-            source_boosts=settings.retrieval_source_boosts,
-        )
-
-
-class RagGenerator:
-    def generate(
-        self,
-        settings: Settings,
-        question: str,
-        retrieved_chunks: list[dict[str, object]],
-        model_client: object | None = None,
-        history: list[dict[str, object]] | None = None,
-    ) -> GeneratedAnswer:
-        result = answer_question(settings, question, retrieved_chunks, model_client, history=history)
-        sources = result.get("sources", [])
-        return GeneratedAnswer(
-            answer=str(result.get("answer", "")),
-            mode=str(result.get("mode", "")),
-            sources=sources if isinstance(sources, list) else [],
-        )
 
 
 class RetrieverProvider:
@@ -72,9 +58,11 @@ class RetrieverProvider:
     @classmethod
     def from_settings(cls, settings: Settings) -> "RetrieverProvider":
         provider = settings.retrieval_provider
-        if provider != "lexical":
-            raise ValueError(f"Unsupported retriever provider: {provider}")
-        return cls(LexicalRetriever())
+        if provider == "lexical":
+            from .adapters.retrievers import LexicalRetriever
+
+            return cls(LexicalRetriever())
+        raise ValueError(f"Unsupported retriever provider: {provider}")
 
     def retrieve(self, settings: Settings, query: str) -> list[dict[str, object]]:
         return self.retriever.retrieve(settings, query)
@@ -87,9 +75,15 @@ class GeneratorProvider:
     @classmethod
     def from_settings(cls, settings: Settings) -> "GeneratorProvider":
         provider = settings.generation_provider
-        if provider != "openai_compatible":
-            raise ValueError(f"Unsupported generator provider: {provider}")
-        return cls(RagGenerator())
+        if provider == "extractive":
+            from .adapters.generators import ExtractiveGenerator
+
+            return cls(ExtractiveGenerator())
+        if provider == "openai_compatible":
+            from .adapters.generators import OpenAICompatibleGenerator
+
+            return cls(OpenAICompatibleGenerator())
+        raise ValueError(f"Unsupported generator provider: {provider}")
 
     def generate(
         self,
@@ -100,3 +94,34 @@ class GeneratorProvider:
         history: list[dict[str, object]] | None = None,
     ) -> GeneratedAnswer:
         return self.generator.generate(settings, question, retrieved_chunks, model_client, history=history)
+
+
+def __getattr__(name: str) -> object:
+    if name == "LexicalRetriever":
+        from .adapters.retrievers import LexicalRetriever
+
+        return LexicalRetriever
+    if name == "ExtractiveGenerator":
+        from .adapters.generators import ExtractiveGenerator
+
+        return ExtractiveGenerator
+    if name in {"OpenAICompatibleGenerator", "RagGenerator"}:
+        from .adapters.generators import OpenAICompatibleGenerator
+
+        return OpenAICompatibleGenerator
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "GeneratedAnswer",
+    "GeneratorPort",
+    "GeneratorProvider",
+    "PolicyPort",
+    "RetrieverPort",
+    "RetrieverProvider",
+    "ToolPort",
+    "LexicalRetriever",
+    "ExtractiveGenerator",
+    "OpenAICompatibleGenerator",
+    "RagGenerator",
+]

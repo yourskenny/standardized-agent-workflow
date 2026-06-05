@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tomllib
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -18,11 +18,13 @@ class Settings:
     manifest_path: Path
     knowledge_root: Path
     index_path: Path
+    config_path: Path | None = None
     chunk_size: int = 1200
     chunk_overlap: int = 160
     top_k: int = 5
     retrieval_provider: str = "lexical"
     generation_provider: str = "openai_compatible"
+    generation_fallback: str = "extractive"
     regression_output_dir: Path | None = None
     intent_config_path: Path | None = None
     workflow_config_path: Path | None = None
@@ -31,6 +33,14 @@ class Settings:
     ui_config_path: Path | None = None
     default_intent: str = "knowledge_qa"
     default_workflow: str = "rag_qa"
+    allow_workflow_fallback: bool = False
+    plugin_modules: list[str] = field(default_factory=list)
+    server_request_body_limit_bytes: int = 1_000_000
+    server_timeout_seconds: float = 30
+    server_auth_token: str = ""
+    server_basic_auth_username: str = ""
+    server_basic_auth_password: str = ""
+    server_cors_allowlist: list[str] = field(default_factory=list)
     retrieval_source_boosts: list[tuple[str, float]] | None = None
     config_schema_versions: dict[str, str] | None = None
 
@@ -53,6 +63,8 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
             "runtime",
             "retrieval",
             "generation",
+            "plugins",
+            "server",
             "regression",
         },
         config_file,
@@ -62,6 +74,8 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
     retrieval = data.get("retrieval", {})
     regression = data.get("regression", {})
     generation = data.get("generation", {})
+    plugins = data.get("plugins", {})
+    server = data.get("server", {})
     _warn_unknown_fields(project, {"prompt_path", "manifest_path", "knowledge_root", "index_path"}, config_file, "project")
     _warn_unknown_fields(
         runtime,
@@ -73,6 +87,7 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
             "policy_config",
             "tool_config",
             "ui_config",
+            "allow_workflow_fallback",
         },
         config_file,
         "runtime",
@@ -84,6 +99,20 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
         "retrieval",
     )
     _warn_unknown_fields(generation, {"provider", "fallback"}, config_file, "generation")
+    _warn_unknown_fields(plugins, {"modules"}, config_file, "plugins")
+    _warn_unknown_fields(
+        server,
+        {
+            "request_body_limit_bytes",
+            "timeout_seconds",
+            "auth_token",
+            "basic_auth_username",
+            "basic_auth_password",
+            "cors_allowlist",
+        },
+        config_file,
+        "server",
+    )
     _warn_unknown_fields(regression, {"output_dir"}, config_file, "regression")
 
     prompt_path = _resolve_inside(root, project.get("prompt_path", "agent/system-prompt.md"))
@@ -111,6 +140,7 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
 
     return Settings(
         project_root=root,
+        config_path=config_file,
         prompt_path=prompt_path,
         manifest_path=manifest_path,
         knowledge_root=knowledge_root,
@@ -120,6 +150,7 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
         top_k=int(retrieval.get("top_k", 5)),
         retrieval_provider=str(retrieval.get("provider", "lexical")),
         generation_provider=str(generation.get("provider", "openai_compatible")),
+        generation_fallback=str(generation.get("fallback", "extractive")),
         regression_output_dir=regression_output_dir,
         intent_config_path=intent_config_path,
         workflow_config_path=workflow_config_path,
@@ -128,6 +159,14 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
         ui_config_path=ui_config_path,
         default_intent=str(runtime.get("default_intent", "knowledge_qa")),
         default_workflow=str(runtime.get("default_workflow", "rag_qa")),
+        allow_workflow_fallback=bool(runtime.get("allow_workflow_fallback", False)),
+        plugin_modules=_string_list(plugins.get("modules", [])),
+        server_request_body_limit_bytes=int(server.get("request_body_limit_bytes", 1_000_000)),
+        server_timeout_seconds=float(server.get("timeout_seconds", 30)),
+        server_auth_token=str(server.get("auth_token", "")),
+        server_basic_auth_username=str(server.get("basic_auth_username", "")),
+        server_basic_auth_password=str(server.get("basic_auth_password", "")),
+        server_cors_allowlist=_string_list(server.get("cors_allowlist", [])),
         retrieval_source_boosts=_source_boosts(retrieval.get("source_boosts", []), config_file),
         config_schema_versions=schema_versions,
     )
@@ -180,3 +219,9 @@ def _source_boosts(value: object, path: Path) -> list[tuple[str, float]] | None:
             raise ValueError(f"retrieval.source_boosts entry missing pattern in {path}")
         boosts.append((pattern, float(record.get("boost", 0))))
     return boosts
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]

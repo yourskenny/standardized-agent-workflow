@@ -1,4 +1,4 @@
-schema_version = "intent.v1"
+schema_version = "intent.v2"
 
 [[intents]]
 id = "knowledge_qa"
@@ -7,6 +7,10 @@ examples = ["<高频事实问题>", "<领域专业问题>"]
 keywords = ["<关键词1>", "<关键词2>"]
 workflow = "rag_qa"
 risk_level = "medium"
+priority = 10
+confidence_threshold = 0.2
+negative_keywords = ["complete paper", "complete assignment", "direct submission", "ghostwrite"]
+requires_sources = true
 knowledge_scopes = ["current", "stable", "policy"]
 
 [[intents]]
@@ -17,4 +21,8 @@ keywords = ["完整论文", "完整作业", "完整报告", "直接提交", "代
 workflow = "refusal_with_guidance"
 risk_level = "high"
 policy = "academic_integrity"
+priority = 90
+confidence_threshold = 0.2
+negative_keywords = []
+requires_sources = false
 knowledge_scopes = ["policy"]

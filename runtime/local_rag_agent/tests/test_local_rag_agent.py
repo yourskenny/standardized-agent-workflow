@@ -2,8 +2,13 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
+import threading
+import tomllib
 import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from local_rag_agent.agent import answer_question, build_extractive_answer, build_messages
@@ -19,17 +24,23 @@ from local_rag_agent.cli import (
 )
 from local_rag_agent.config import Settings, load_settings
 from local_rag_agent.index_store import read_index
-from local_rag_agent.intent import IntentRouter, load_intents
+from local_rag_agent.intent import IntentRouter, load_intent_tests, load_intents
 from local_rag_agent.manifest import expand_manifest_entries, parse_manifest_entries
 from local_rag_agent.policy import PolicyGuard, load_policies
 from local_rag_agent.ports import GeneratorProvider, RetrieverProvider
 from local_rag_agent.regression import parse_regression_questions, run_regression, summarize_regression_report
 from local_rag_agent.retrieval import rank_chunks
 from local_rag_agent.runtime import AgentRuntime
-from local_rag_agent.server import render_chat_page, render_workspace_home
+from local_rag_agent.server import ServerHooks, make_handler, render_chat_page, render_workspace_home
 from local_rag_agent.tools import ToolProvider, load_tools
 from local_rag_agent.types import AgentRequest, AgentResponse, AgentTrace, SourceReference
 from local_rag_agent.ui import load_ui_config
+from local_rag_agent.validator import (
+    ValidationIssue,
+    ValidationResult,
+    validate_project_config,
+    validate_project_contract,
+)
 from local_rag_agent.workflow import (
     StepRegistry,
     WorkflowContext,
@@ -178,6 +189,34 @@ class ConfigAndManifestTests(unittest.TestCase):
 
             self.assertEqual(settings.config_schema_versions["runtime"], "runtime.v1")
 
+    def test_load_config_reads_server_safety_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "agent.toml"
+            config_path.write_text(
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "manifest.md"\n'
+                '[server]\n'
+                'request_body_limit_bytes = 128\n'
+                'timeout_seconds = 7\n'
+                'auth_token = "secret-token"\n'
+                'basic_auth_username = "agent"\n'
+                'basic_auth_password = "pass"\n'
+                'cors_allowlist = ["https://example.test"]\n',
+                encoding="utf-8",
+            )
+
+            settings = load_settings(root, config_path)
+
+            self.assertEqual(settings.server_request_body_limit_bytes, 128)
+            self.assertEqual(settings.server_timeout_seconds, 7)
+            self.assertEqual(settings.server_auth_token, "secret-token")
+            self.assertEqual(settings.server_basic_auth_username, "agent")
+            self.assertEqual(settings.server_basic_auth_password, "pass")
+            self.assertEqual(settings.server_cors_allowlist, ["https://example.test"])
+
     def test_load_config_rejects_unsupported_schema_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -233,9 +272,10 @@ class ConfigAndManifestTests(unittest.TestCase):
         intents = load_intents(intent_config)
 
         self.assertTrue(intent_config.exists())
-        self.assertEqual(intents[0].schema_version, "intent.v1")
+        self.assertEqual(intents[0].schema_version, "intent.v2")
         self.assertTrue(any(intent.id == "knowledge_qa" for intent in intents))
         self.assertTrue(any(intent.id == "complete_submission_request" for intent in intents))
+        self.assertTrue(any(intent.requires_sources for intent in intents if intent.id == "knowledge_qa"))
 
     def test_template_agent_project_includes_structured_runtime_configs(self):
         template_root = Path("templates/agent-project")
@@ -256,13 +296,73 @@ class ConfigAndManifestTests(unittest.TestCase):
         self.assertEqual(settings.policy_config_path, policy_config.resolve())
         self.assertEqual(settings.tool_config_path, tool_config.resolve())
         self.assertEqual(settings.ui_config_path, ui_config.resolve())
-        self.assertEqual(policies[0].schema_version, "policy.v1")
-        self.assertEqual(tools[0].schema_version, "tool.v1")
+        self.assertEqual(policies[0].schema_version, "policy.v2")
+        self.assertEqual(tools[0].schema_version, "tool.v2")
         self.assertIn("[[workflows]]", workflow_config.read_text(encoding="utf-8"))
+        self.assertEqual(load_workflows(workflow_config)[0].schema_version, "workflow.v2")
         self.assertTrue(any(policy.id == "academic_integrity" for policy in policies))
         self.assertTrue(any(policy.id == "source_required" for policy in policies))
         self.assertTrue(any(tool.id == "example_disabled_tool" for tool in tools))
+        self.assertEqual(tools[0].adapter, "disabled")
         self.assertEqual(ui.title, "Local Agent")
+
+    def test_template_v2_project_validate_ingest_chat_and_regression_smoke(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "agent-project"
+            shutil.copytree(Path("templates/agent-project"), root)
+            config_path = root / "runtime.toml"
+            questions_path = root / "examples" / "core-regression-questions.md"
+            regression_output = root / ".local_rag_agent" / "smoke-results.jsonl"
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                validate_exit = cli_main(["validate", "--project", str(root), "--config", str(config_path)])
+                ingest_exit = cli_main(["ingest", "--project", str(root), "--config", str(config_path)])
+                chat_exit = cli_main(
+                    [
+                        "chat",
+                        "--project",
+                        str(root),
+                        "--config",
+                        str(config_path),
+                        "complete paper",
+                    ]
+                )
+                regression_exit = cli_main(
+                    [
+                        "regression",
+                        "--project",
+                        str(root),
+                        "--config",
+                        str(config_path),
+                        "--questions",
+                        str(questions_path),
+                        "--output",
+                        str(regression_output),
+                    ]
+                )
+
+            self.assertEqual(validate_exit, 0)
+            self.assertEqual(ingest_exit, 0)
+            self.assertEqual(chat_exit, 0)
+            self.assertEqual(regression_exit, 0)
+            self.assertTrue(regression_output.exists())
+
+    def test_runtime_package_environment_and_container_artifacts_exist(self):
+        runtime_root = Path("runtime/local_rag_agent")
+        pyproject = runtime_root / "pyproject.toml"
+        env_example = runtime_root / ".env.example"
+        dockerfile = runtime_root / "Dockerfile"
+
+        metadata = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        env_text = env_example.read_text(encoding="utf-8")
+        docker_text = dockerfile.read_text(encoding="utf-8")
+
+        self.assertEqual(metadata["project"]["name"], "local-rag-agent")
+        self.assertEqual(metadata["project"]["scripts"]["local-rag-agent"], "local_rag_agent.cli:main")
+        self.assertIn("LOCAL_AGENT_API_KEY=", env_text)
+        self.assertIn("LOCAL_AGENT_BASE_URL=", env_text)
+        self.assertIn("LOCAL_AGENT_MODEL=", env_text)
+        self.assertIn("python -m local_rag_agent serve", docker_text)
 
     def test_template_rag_workflow_can_stop_on_policy_decisions(self):
         workflows = load_workflows(Path("templates/agent-project") / "agent" / "workflows.toml")
@@ -646,6 +746,80 @@ class AgentTests(unittest.TestCase):
                 },
             )
 
+    def test_runtime_emits_trace_event_to_registered_sink_with_step_statuses(self):
+        from local_rag_agent.components import ComponentRegistry
+
+        class RecordingSink:
+            def __init__(self):
+                self.events = []
+
+            def emit(self, event):
+                self.events.append(event)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                config_schema_versions={"runtime": "runtime.v1"},
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text(
+                '{"chunks":[{"chunk_id":"facts.md#0","source":"facts.md","content":"Answer: traced."}]}',
+                encoding="utf-8",
+            )
+            sink = RecordingSink()
+            components = ComponentRegistry.builtins()
+            components.register_trace_sink("memory", sink)
+
+            response = AgentRuntime(settings, components=components).run(
+                AgentRequest("trace this", metadata={"request_id": "req-123"})
+            )
+
+            self.assertEqual(response.trace.request_id, "req-123")
+            self.assertEqual(len(sink.events), 1)
+            event = sink.events[0]
+            self.assertEqual(event["request_id"], "req-123")
+            self.assertEqual(event["intent"], "knowledge_qa")
+            self.assertEqual(event["workflow"], "rag_qa")
+            self.assertEqual(event["config_versions"], {"runtime": "runtime.v1"})
+            self.assertEqual(event["steps"][0]["name"], "route_intent")
+            self.assertEqual(event["steps"][0]["status"], "ok")
+
+    def test_runtime_writes_structured_log_for_completed_trace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                config_schema_versions={"runtime": "runtime.v1"},
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text(
+                '{"chunks":[{"chunk_id":"facts.md#0","source":"facts.md","content":"Answer: logged."}]}',
+                encoding="utf-8",
+            )
+
+            with self.assertLogs("local_rag_agent.runtime", level="INFO") as logs:
+                AgentRuntime(settings).run(AgentRequest("log this", metadata={"request_id": "req-log"}))
+
+            event = json.loads(logs.output[0].split("runtime_trace ", 1)[1])
+            self.assertEqual(event["request_id"], "req-log")
+            self.assertEqual(event["intent"], "knowledge_qa")
+            self.assertEqual(event["workflow"], "rag_qa")
+            self.assertEqual(event["config_versions"], {"runtime": "runtime.v1"})
+            self.assertTrue(all("status" in step for step in event["steps"]))
+
     def test_runtime_runs_refusal_workflow_without_index(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -701,6 +875,90 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(policy_steps[0]["detail"]["policy_id"], "source_required")
             self.assertFalse(policy_steps[0]["detail"]["allowed"])
 
+    def test_runtime_uses_workflow_requires_sources_for_non_rag_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            intent_config = root / "intents.toml"
+            workflow_config = root / "workflows.toml"
+            intent_config.write_text(
+                '[[intents]]\n'
+                'id = "research"\n'
+                'workflow = "research_qa"\n'
+                'keywords = ["research"]\n',
+                encoding="utf-8",
+            )
+            workflow_config.write_text(
+                '[[workflows]]\n'
+                'id = "research_qa"\n'
+                'requires_sources = true\n'
+                'steps = ["prepare_retrieval_query", "run_retrieval", "apply_policy", "build_policy_response", "generate_answer", "build_response"]\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                intent_config_path=intent_config,
+                workflow_config_path=workflow_config,
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text('{"chunks":[]}', encoding="utf-8")
+
+            response = AgentRuntime(settings).run(AgentRequest("research unknown fact")).to_dict()
+            policy_steps = [
+                step for step in response["trace"]["steps"] if step["name"] == "apply_policy"
+            ]
+
+            self.assertEqual(response["workflow"], "research_qa")
+            self.assertEqual(response["mode"], "no_evidence")
+            self.assertEqual(policy_steps[0]["detail"]["policy_id"], "source_required")
+
+    def test_runtime_uses_intent_requires_sources_over_workflow_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            intent_config = root / "intents.toml"
+            workflow_config = root / "workflows.toml"
+            intent_config.write_text(
+                '[[intents]]\n'
+                'id = "research"\n'
+                'workflow = "research_qa"\n'
+                'keywords = ["research"]\n'
+                'requires_sources = true\n',
+                encoding="utf-8",
+            )
+            workflow_config.write_text(
+                '[[workflows]]\n'
+                'id = "research_qa"\n'
+                'requires_sources = false\n'
+                'steps = ["prepare_retrieval_query", "run_retrieval", "apply_policy", "build_policy_response", "generate_answer", "build_response"]\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                intent_config_path=intent_config,
+                workflow_config_path=workflow_config,
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text('{"chunks":[]}', encoding="utf-8")
+
+            response = AgentRuntime(settings).run(AgentRequest("research unknown fact")).to_dict()
+            policy_steps = [
+                step for step in response["trace"]["steps"] if step["name"] == "apply_policy"
+            ]
+
+            self.assertEqual(response["mode"], "no_evidence")
+            self.assertEqual(policy_steps[0]["detail"]["policy_id"], "source_required")
+
     def test_runtime_runs_retrieval_debug_workflow(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -744,7 +1002,31 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(response["workflow"], "retrieval_debug")
             self.assertEqual(response["mode"], "retrieval_debug")
             self.assertIn("course.md", response["answer"])
-            self.assertEqual(response["sources"][0]["source"], "course.md")
+
+    def test_runtime_raises_for_unknown_workflow_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("prompt", encoding="utf-8")
+            intent_config = root / "intents.toml"
+            intent_config.write_text(
+                '[[intents]]\n'
+                'id = "broken"\n'
+                'workflow = "missing_workflow"\n'
+                'keywords = ["broken"]\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "missing-index.json",
+                intent_config_path=intent_config,
+            )
+
+            with self.assertRaisesRegex(KeyError, "Unknown workflow"):
+                AgentRuntime(settings).run(AgentRequest("broken request"))
 
     def test_extractive_answer_prefers_answer_line_from_top_chunk(self):
         chunks = [
@@ -869,6 +1151,54 @@ class IntentConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported schema_version"):
                 load_intents(path)
 
+    def test_load_intents_reads_v2_routing_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "intents.toml"
+            path.write_text(
+                'schema_version = "intent.v2"\n'
+                '[[intents]]\n'
+                'id = "knowledge_qa"\n'
+                'workflow = "rag_qa"\n'
+                'priority = 50\n'
+                'confidence_threshold = 0.62\n'
+                'keywords = ["政策"]\n'
+                'negative_keywords = ["代写"]\n'
+                'requires_sources = true\n'
+                'knowledge_scopes = ["current", "policy"]\n',
+                encoding="utf-8",
+            )
+
+            intents = load_intents(path)
+
+            self.assertEqual(intents[0].schema_version, "intent.v2")
+            self.assertEqual(intents[0].priority, 50)
+            self.assertEqual(intents[0].confidence_threshold, 0.62)
+            self.assertEqual(intents[0].negative_keywords, ["代写"])
+            self.assertTrue(intents[0].requires_sources)
+            self.assertEqual(intents[0].knowledge_scopes, ["current", "policy"])
+
+    def test_load_intent_tests_reads_nested_v2_test_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "intents.toml"
+            path.write_text(
+                'schema_version = "intent.v2"\n'
+                '[[intents]]\n'
+                'id = "knowledge_qa"\n'
+                'workflow = "rag_qa"\n'
+                'keywords = ["政策"]\n'
+                '[[intents.tests]]\n'
+                'input = "迟交政策是什么？"\n'
+                'expected_intent = "knowledge_qa"\n',
+                encoding="utf-8",
+            )
+
+            tests = load_intent_tests(path)
+
+            self.assertEqual(len(tests), 1)
+            self.assertEqual(tests[0].intent_id, "knowledge_qa")
+            self.assertEqual(tests[0].input, "迟交政策是什么？")
+            self.assertEqual(tests[0].expected_intent, "knowledge_qa")
+
     def test_intent_router_selects_keyword_match(self):
         router = IntentRouter(
             [
@@ -892,6 +1222,47 @@ class IntentConfigTests(unittest.TestCase):
         self.assertEqual(decision.intent.id, "submission_boundary")
         self.assertEqual(decision.intent.workflow, "refusal_with_guidance")
         self.assertEqual(decision.source, "config")
+
+    def test_intent_router_uses_priority_and_negative_keywords(self):
+        router = IntentRouter(
+            load_intents_from_inline(
+                'schema_version = "intent.v2"\n'
+                '[[intents]]\n'
+                'id = "high_priority_boundary"\n'
+                'workflow = "refusal_with_guidance"\n'
+                'priority = 90\n'
+                'keywords = ["policy"]\n'
+                'negative_keywords = ["class"]\n'
+                '[[intents]]\n'
+                'id = "knowledge_qa"\n'
+                'workflow = "rag_qa"\n'
+                'priority = 10\n'
+                'keywords = ["policy"]\n'
+            )
+        )
+
+        high_priority = router.route("policy question")
+        negative_excluded = router.route("class policy question")
+
+        self.assertEqual(high_priority.intent.id, "high_priority_boundary")
+        self.assertEqual(negative_excluded.intent.id, "knowledge_qa")
+
+    def test_intent_router_honors_confidence_threshold(self):
+        router = IntentRouter(
+            load_intents_from_inline(
+                'schema_version = "intent.v2"\n'
+                '[[intents]]\n'
+                'id = "strict_intent"\n'
+                'workflow = "refusal_with_guidance"\n'
+                'keywords = ["strict"]\n'
+                'confidence_threshold = 0.95\n'
+            )
+        )
+
+        decision = router.route("strict")
+
+        self.assertEqual(decision.intent.id, "knowledge_qa")
+        self.assertEqual(decision.source, "fallback")
 
     def test_intent_router_falls_back_to_default(self):
         router = IntentRouter([])
@@ -988,6 +1359,44 @@ class ToolProviderTests(unittest.TestCase):
             self.assertFalse(tools[0].enabled)
             self.assertEqual(tools[0].allowed_intents, [])
 
+    def test_load_tools_reads_v2_adapter_contract_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tools.toml"
+            path.write_text(
+                'schema_version = "tool.v2"\n'
+                '[[tools]]\n'
+                'id = "lookup"\n'
+                'description = "Lookup local records."\n'
+                'enabled = true\n'
+                'adapter = "mock"\n'
+                'allowed_intents = ["tool_lookup"]\n'
+                'risk_level = "medium"\n'
+                'timeout_seconds = 4\n'
+                'max_output_bytes = 100\n'
+                'requires_approval = true\n'
+                '[tools.input_mapping]\n'
+                'query = "$message"\n'
+                '[tools.input_schema]\n'
+                'required = ["query"]\n'
+                '[tools.input_schema.properties.query]\n'
+                'type = "string"\n'
+                '[tools.output_schema]\n'
+                'required = ["answer"]\n'
+                '[tools.output_schema.properties.answer]\n'
+                'type = "string"\n',
+                encoding="utf-8",
+            )
+
+            tools = load_tools(path)
+
+            self.assertEqual(tools[0].schema_version, "tool.v2")
+            self.assertEqual(tools[0].adapter, "mock")
+            self.assertEqual(tools[0].provider, "mock")
+            self.assertTrue(tools[0].requires_approval)
+            self.assertEqual(tools[0].input_mapping, {"query": "$message"})
+            self.assertEqual(tools[0].input_schema["required"], ["query"])
+            self.assertEqual(tools[0].output_schema["required"], ["answer"])
+
     def test_load_tools_rejects_bad_schema_and_warns_unknown_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "tools.toml"
@@ -1042,7 +1451,554 @@ class ToolProviderTests(unittest.TestCase):
             self.assertEqual(allowed.output["answer"], "mocked result")
 
 
+class PolicyToolPortTests(unittest.TestCase):
+    def test_policy_and_tool_ports_live_outside_keyword_and_mock_implementations(self):
+        from local_rag_agent.adapters.policies import KeywordPolicyGuard
+        from local_rag_agent.adapters.tools import ConfiguredToolProvider
+        from local_rag_agent.policy import PolicyGuard as LegacyPolicyGuard
+        from local_rag_agent.ports import PolicyPort, ToolPort
+        from local_rag_agent.tools import ToolProvider as LegacyToolProvider
+
+        self.assertEqual(PolicyPort.__module__, "local_rag_agent.ports")
+        self.assertEqual(ToolPort.__module__, "local_rag_agent.ports")
+        self.assertEqual(KeywordPolicyGuard.__module__, "local_rag_agent.adapters.policies")
+        self.assertEqual(ConfiguredToolProvider.__module__, "local_rag_agent.adapters.tools")
+        self.assertIs(LegacyPolicyGuard, KeywordPolicyGuard)
+        self.assertIs(LegacyToolProvider, ConfiguredToolProvider)
+
+
+class ValidatorContractTests(unittest.TestCase):
+    def test_validation_result_reports_errors_and_warnings_as_payload(self):
+        result = ValidationResult(
+            errors=[
+                ValidationIssue(
+                    code="UNKNOWN_WORKFLOW",
+                    path=Path("agent/intents.toml"),
+                    detail="intent x references workflow y",
+                )
+            ],
+            warnings=[
+                ValidationIssue(
+                    code="NO_INTENT_TESTS",
+                    path=Path("agent/intents.toml"),
+                    detail="intent knowledge_qa has no tests",
+                )
+            ],
+        )
+
+        payload = result.to_dict()
+
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            payload,
+            {
+                "ok": False,
+                "errors": [
+                    {
+                        "code": "UNKNOWN_WORKFLOW",
+                        "path": "agent/intents.toml",
+                        "detail": "intent x references workflow y",
+                    }
+                ],
+                "warnings": [
+                    {
+                        "code": "NO_INTENT_TESTS",
+                        "path": "agent/intents.toml",
+                        "detail": "intent knowledge_qa has no tests",
+                    }
+                ],
+            },
+        )
+
+    def test_validate_project_contract_returns_structured_success_for_minimal_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            settings = Settings(
+                project_root=root,
+                prompt_path=root / "agent" / "system-prompt.md",
+                manifest_path=root / "knowledge_base" / "_manifests" / "current-upload-manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+
+            result = validate_project_contract(settings)
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.errors, [])
+            self.assertEqual(result.warnings, [])
+
+    def test_validate_project_config_collects_schema_version_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'intent_config = "agent/intents.toml"\n'
+                'workflow_config = "agent/workflows.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "intents.toml").write_text('schema_version = "intent.v9"\n', encoding="utf-8")
+            (agent_dir / "workflows.toml").write_text('schema_version = "workflow.v9"\n', encoding="utf-8")
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(
+                [issue.code for issue in result.errors],
+                ["UNSUPPORTED_SCHEMA_VERSION", "UNSUPPORTED_SCHEMA_VERSION"],
+            )
+            self.assertTrue(all("Unsupported schema_version" in issue.detail for issue in result.errors))
+
+    def test_validate_project_config_collects_unknown_field_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                'top_level_extra = true\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'ui_config = "agent/ui.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "ui.toml").write_text(
+                'title = "Local Agent"\n'
+                'extra_ui = true\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertTrue(result.ok)
+            warning_details = [issue.detail for issue in result.warnings]
+            self.assertTrue(any("top_level_extra" in detail for detail in warning_details))
+            self.assertTrue(any("extra_ui" in detail for detail in warning_details))
+
+    def test_validate_project_config_rejects_unknown_intent_workflow_and_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'intent_config = "agent/intents.toml"\n'
+                'workflow_config = "agent/workflows.toml"\n'
+                'policy_config = "agent/policies.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "intents.toml").write_text(
+                'schema_version = "intent.v1"\n'
+                '[[intents]]\n'
+                'id = "broken"\n'
+                'workflow = "missing_workflow"\n'
+                'policy = "missing_policy"\n',
+                encoding="utf-8",
+            )
+            (agent_dir / "workflows.toml").write_text(
+                'schema_version = "workflow.v1"\n'
+                '[[workflows]]\n'
+                'id = "rag_qa"\n'
+                'steps = ["build_refusal_response"]\n',
+                encoding="utf-8",
+            )
+            (agent_dir / "policies.toml").write_text(
+                'schema_version = "policy.v1"\n'
+                '[[policies]]\n'
+                'id = "source_required"\n'
+                'action = "no_evidence"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(
+                [issue.code for issue in result.errors],
+                ["UNKNOWN_WORKFLOW", "UNKNOWN_POLICY"],
+            )
+            self.assertTrue(any("missing_workflow" in issue.detail for issue in result.errors))
+            self.assertTrue(any("missing_policy" in issue.detail for issue in result.errors))
+
+    def test_validate_project_config_accepts_builtin_workflow_and_policy_references(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'intent_config = "agent/intents.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "intents.toml").write_text(
+                'schema_version = "intent.v1"\n'
+                '[[intents]]\n'
+                'id = "submission_boundary"\n'
+                'workflow = "refusal_with_guidance"\n'
+                'policy = "academic_integrity"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertTrue(result.ok)
+
+    def test_validate_project_config_reports_unknown_workflow_step_as_structured_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'workflow_config = "agent/workflows.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "workflows.toml").write_text(
+                'schema_version = "workflow.v1"\n'
+                '[[workflows]]\n'
+                'id = "broken"\n'
+                'steps = ["missing_step"]\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "UNKNOWN_WORKFLOW_STEP")
+            self.assertIn("missing_step", result.errors[0].detail)
+
+    def test_validate_project_config_requires_workflow_terminal_response_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'workflow_config = "agent/workflows.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "workflows.toml").write_text(
+                'schema_version = "workflow.v1"\n'
+                '[[workflows]]\n'
+                'id = "no_response"\n'
+                'steps = ["prepare_retrieval_query", "run_retrieval"]\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "NO_TERMINAL_RESPONSE_PATH")
+            self.assertIn("no_response", result.errors[0].detail)
+
+    def test_validate_project_config_rejects_terminal_step_not_in_workflow_steps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'workflow_config = "agent/workflows.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "workflows.toml").write_text(
+                'schema_version = "workflow.v2"\n'
+                '[[workflows]]\n'
+                'id = "bad_terminal"\n'
+                'requires_sources = true\n'
+                'terminal_steps = ["build_response"]\n'
+                'steps = ["prepare_retrieval_query", "run_retrieval", "build_retrieval_debug_response"]\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "UNKNOWN_TERMINAL_STEP")
+            self.assertIn("build_response", result.errors[0].detail)
+
+    def test_validate_project_config_rejects_unknown_runtime_providers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[retrieval]\n'
+                'provider = "vector"\n'
+                '[generation]\n'
+                'provider = "unknown_model"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(
+                [issue.code for issue in result.errors],
+                ["UNKNOWN_RETRIEVER_PROVIDER", "UNKNOWN_GENERATOR_PROVIDER"],
+            )
+            self.assertTrue(any("vector" in issue.detail for issue in result.errors))
+            self.assertTrue(any("unknown_model" in issue.detail for issue in result.errors))
+
+    def test_validate_project_config_accepts_explicit_extractive_generator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[generation]\n'
+                'provider = "extractive"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertTrue(result.ok)
+
+    def test_validate_project_config_rejects_unknown_generation_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[generation]\n'
+                'provider = "openai_compatible"\n'
+                'fallback = "retry_forever"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "UNKNOWN_GENERATION_FALLBACK")
+            self.assertIn("retry_forever", result.errors[0].detail)
+
+    def test_validate_project_config_rejects_enabled_tool_unknown_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'tool_config = "agent/tools.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "tools.toml").write_text(
+                'schema_version = "tool.v1"\n'
+                '[[tools]]\n'
+                'id = "crm_lookup"\n'
+                'enabled = true\n'
+                'provider = "crm"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "UNKNOWN_TOOL_PROVIDER")
+            self.assertIn("crm_lookup", result.errors[0].detail)
+            self.assertIn("crm", result.errors[0].detail)
+
+    def test_validate_template_project_runtime_providers_are_known(self):
+        result = validate_project_config(Path("templates/agent-project"), Path("templates/agent-project/runtime.toml"))
+
+        self.assertTrue(result.ok)
+
+    def test_validate_project_config_reports_failed_intent_contract_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'intent_config = "agent/intents.toml"\n',
+                encoding="utf-8",
+            )
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            (agent_dir / "intents.toml").write_text(
+                'schema_version = "intent.v2"\n'
+                '[[intents]]\n'
+                'id = "high_priority_boundary"\n'
+                'workflow = "refusal_with_guidance"\n'
+                'priority = 90\n'
+                'keywords = ["policy"]\n'
+                '[[intents]]\n'
+                'id = "knowledge_qa"\n'
+                'workflow = "rag_qa"\n'
+                'priority = 10\n'
+                'keywords = ["policy"]\n'
+                '[[intents.tests]]\n'
+                'input = "policy question"\n'
+                'expected_intent = "knowledge_qa"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "INTENT_TEST_FAILED")
+            self.assertIn("expected knowledge_qa", result.errors[0].detail)
+
+    def test_validate_project_config_rejects_empty_manifest_expansion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            manifest = root / "knowledge_base" / "_manifests" / "current-upload-manifest.md"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("## 应上传\n\n- `knowledge_base/_pre_ingestion/`\n", encoding="utf-8")
+            (root / "knowledge_base" / "_pre_ingestion").mkdir()
+            (root / "knowledge_base" / "_pre_ingestion" / "draft.md").write_text("draft", encoding="utf-8")
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "MANIFEST_EMPTY")
+
+    def test_validate_project_config_reports_paths_outside_project_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            outside = root.parent / "outside-prompt.md"
+            outside.write_text("prompt", encoding="utf-8")
+            self.addCleanup(lambda: outside.unlink(missing_ok=True))
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                f'prompt_path = "{outside.as_posix()}"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "PATH_OUTSIDE_PROJECT")
+
+    def test_validate_project_config_reports_index_manifest_mismatch_when_index_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            knowledge_file = root / "knowledge_base" / "facts.md"
+            knowledge_file.parent.mkdir(parents=True)
+            knowledge_file.write_text("# Facts\n\nSupported fact.", encoding="utf-8")
+            manifest = root / "knowledge_base" / "_manifests" / "current-upload-manifest.md"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("- `knowledge_base/facts.md`\n", encoding="utf-8")
+            index_path = root / ".local_rag_agent" / "index.json"
+            index_path.parent.mkdir()
+            index_path.write_text(
+                '{"chunks":[{"chunk_id":"other.md#0","source":"knowledge_base/other.md","content":"stale"}]}',
+                encoding="utf-8",
+            )
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                'index_path = ".local_rag_agent/index.json"\n',
+                encoding="utf-8",
+            )
+
+            result = validate_project_config(root, config_path)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.errors[0].code, "INDEX_MANIFEST_MISMATCH")
+            self.assertIn("knowledge_base/facts.md", result.errors[0].detail)
+
+
 class ComponentPortTests(unittest.TestCase):
+    def test_retriever_and_generator_adapters_live_outside_ports_with_compat_exports(self):
+        from local_rag_agent.adapters.generators import ExtractiveGenerator, OpenAICompatibleGenerator
+        from local_rag_agent.adapters.retrievers import LexicalRetriever
+        from local_rag_agent.ports import (
+            ExtractiveGenerator as LegacyExtractiveGenerator,
+            LexicalRetriever as LegacyLexicalRetriever,
+            RagGenerator,
+            RetrieverPort,
+        )
+
+        self.assertEqual(RetrieverPort.__module__, "local_rag_agent.ports")
+        self.assertEqual(LexicalRetriever.__module__, "local_rag_agent.adapters.retrievers")
+        self.assertEqual(ExtractiveGenerator.__module__, "local_rag_agent.adapters.generators")
+        self.assertEqual(OpenAICompatibleGenerator.__module__, "local_rag_agent.adapters.generators")
+        self.assertIs(LegacyLexicalRetriever, LexicalRetriever)
+        self.assertIs(LegacyExtractiveGenerator, ExtractiveGenerator)
+        self.assertIs(RagGenerator, OpenAICompatibleGenerator)
+
     def test_retriever_provider_uses_configured_lexical_adapter(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -1085,14 +2041,136 @@ class ComponentPortTests(unittest.TestCase):
             self.assertIn("generated through port", answer.answer)
             self.assertEqual(answer.sources[0]["source"], "facts.md")
 
+    def test_generator_provider_uses_openai_compatible_model_client(self):
+        class FakeModelClient:
+            def __init__(self):
+                self.called = False
+
+            def chat(self, messages):
+                self.called = True
+                return "model generated answer"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                generation_provider="openai_compatible",
+            )
+            chunks = [{"chunk_id": "facts.md#0", "source": "facts.md", "content": "Answer: source answer."}]
+            client = FakeModelClient()
+
+            answer = GeneratorProvider.from_settings(settings).generate(settings, "question?", chunks, model_client=client)
+
+            self.assertTrue(client.called)
+            self.assertEqual(answer.mode, "model")
+            self.assertEqual(answer.answer, "model generated answer")
+
+    def test_generator_provider_extractive_provider_ignores_model_client(self):
+        class FakeModelClient:
+            def __init__(self):
+                self.called = False
+
+            def chat(self, messages):
+                self.called = True
+                return "model generated answer"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                generation_provider="extractive",
+            )
+            chunks = [{"chunk_id": "facts.md#0", "source": "facts.md", "content": "Answer: explicit fallback answer."}]
+            client = FakeModelClient()
+
+            answer = GeneratorProvider.from_settings(settings).generate(settings, "question?", chunks, model_client=client)
+
+            self.assertFalse(client.called)
+            self.assertEqual(answer.mode, "extractive")
+            self.assertIn("explicit fallback answer", answer.answer)
+
+    def test_generator_provider_uses_configured_extractive_fallback_without_model_client(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                generation_provider="openai_compatible",
+                generation_fallback="extractive",
+            )
+            chunks = [{"chunk_id": "facts.md#0", "source": "facts.md", "content": "Answer: fallback answer."}]
+
+            answer = GeneratorProvider.from_settings(settings).generate(settings, "question?", chunks, model_client=None)
+
+            self.assertEqual(answer.mode, "extractive")
+            self.assertIn("fallback answer", answer.answer)
+
 
 class WorkflowPipelineTests(unittest.TestCase):
+    def test_workflow_facade_reexports_split_definition_runner_registry_and_steps_modules(self):
+        from local_rag_agent.workflow import (
+            StepRegistry as LegacyStepRegistry,
+            WorkflowContext as LegacyWorkflowContext,
+            WorkflowDefinition as LegacyWorkflowDefinition,
+            WorkflowPipeline as LegacyWorkflowPipeline,
+            WorkflowRegistry as LegacyWorkflowRegistry,
+            build_response as legacy_build_response,
+            load_workflows as legacy_load_workflows,
+            prepare_retrieval_query as legacy_prepare_retrieval_query,
+        )
+        from local_rag_agent.workflows.definitions import WorkflowDefinition, load_workflows
+        from local_rag_agent.workflows.registry import WorkflowRegistry
+        from local_rag_agent.workflows.runner import WorkflowContext, WorkflowPipeline
+        from local_rag_agent.workflows.steps import StepRegistry, build_response, prepare_retrieval_query
+
+        self.assertEqual(WorkflowDefinition.__module__, "local_rag_agent.workflows.definitions")
+        self.assertEqual(load_workflows.__module__, "local_rag_agent.workflows.definitions")
+        self.assertEqual(StepRegistry.__module__, "local_rag_agent.workflows.steps")
+        self.assertEqual(prepare_retrieval_query.__module__, "local_rag_agent.workflows.steps")
+        self.assertEqual(build_response.__module__, "local_rag_agent.workflows.steps")
+        self.assertEqual(WorkflowContext.__module__, "local_rag_agent.workflows.runner")
+        self.assertEqual(WorkflowPipeline.__module__, "local_rag_agent.workflows.runner")
+        self.assertEqual(WorkflowRegistry.__module__, "local_rag_agent.workflows.registry")
+        self.assertIs(LegacyWorkflowDefinition, WorkflowDefinition)
+        self.assertIs(legacy_load_workflows, load_workflows)
+        self.assertIs(LegacyStepRegistry, StepRegistry)
+        self.assertIs(legacy_prepare_retrieval_query, prepare_retrieval_query)
+        self.assertIs(legacy_build_response, build_response)
+        self.assertIs(LegacyWorkflowContext, WorkflowContext)
+        self.assertIs(LegacyWorkflowPipeline, WorkflowPipeline)
+        self.assertIs(LegacyWorkflowRegistry, WorkflowRegistry)
+
     def test_registry_contains_required_builtin_workflows(self):
         registry = WorkflowRegistry.builtins()
 
         self.assertTrue(registry.has("rag_qa"))
         self.assertTrue(registry.has("retrieval_debug"))
         self.assertTrue(registry.has("refusal_with_guidance"))
+
+    def test_workflow_registry_unknown_workflow_requires_explicit_fallback(self):
+        registry = WorkflowRegistry.builtins()
+
+        with self.assertRaisesRegex(KeyError, "Unknown workflow"):
+            registry.get("missing_workflow")
+
+        self.assertEqual(registry.get("missing_workflow", allow_fallback=True).workflow_id, "rag_qa")
 
     def test_step_registry_contains_required_builtin_steps(self):
         registry = StepRegistry.builtins()
@@ -1121,6 +2199,26 @@ class WorkflowPipelineTests(unittest.TestCase):
                 ["prepare_retrieval_query", "run_retrieval", "build_retrieval_debug_response"],
             )
             self.assertEqual(workflows[0].schema_version, "workflow.v1")
+
+    def test_load_workflows_reads_v2_requires_sources_and_terminal_steps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "workflows.toml"
+            path.write_text(
+                'schema_version = "workflow.v2"\n'
+                '[[workflows]]\n'
+                'id = "research_qa"\n'
+                'requires_sources = true\n'
+                'terminal_steps = ["build_policy_response", "build_response"]\n'
+                'steps = ["prepare_retrieval_query", "run_retrieval", "apply_policy", "build_policy_response", "generate_answer", "build_response"]\n',
+                encoding="utf-8",
+            )
+
+            workflows = load_workflows(path)
+
+            self.assertEqual(workflows[0].id, "research_qa")
+            self.assertTrue(workflows[0].requires_sources)
+            self.assertEqual(workflows[0].terminal_steps, ["build_policy_response", "build_response"])
+            self.assertEqual(workflows[0].schema_version, "workflow.v2")
 
     def test_workflow_registry_from_config_runs_configured_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1245,6 +2343,230 @@ class WorkflowPipelineTests(unittest.TestCase):
             self.assertEqual(tool_steps[0]["detail"]["tool_id"], "lookup")
             self.assertTrue(tool_steps[0]["detail"]["ok"])
 
+    def test_configured_tool_workflow_selects_then_calls_tool_and_traces_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            intent_config = agent_dir / "intents.toml"
+            workflow_config = agent_dir / "workflows.toml"
+            tool_config = agent_dir / "tools.toml"
+            intent_config.write_text(
+                '[[intents]]\n'
+                'id = "tool_lookup"\n'
+                'workflow = "tool_lookup"\n'
+                'keywords = ["lookup"]\n',
+                encoding="utf-8",
+            )
+            workflow_config.write_text(
+                'schema_version = "workflow.v1"\n'
+                '[[workflows]]\n'
+                'id = "tool_lookup"\n'
+                'steps = ["tool.select", "tool.call", "response.tool_result"]\n',
+                encoding="utf-8",
+            )
+            tool_config.write_text(
+                '[[tools]]\n'
+                'id = "lookup"\n'
+                'enabled = true\n'
+                'provider = "mock"\n'
+                'allowed_intents = ["tool_lookup"]\n'
+                '[tools.mock_output]\n'
+                'answer = "selected tool answer"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                intent_config_path=intent_config,
+                workflow_config_path=workflow_config,
+                tool_config_path=tool_config,
+            )
+
+            response = AgentRuntime(settings).run(AgentRequest("lookup this")).to_dict()
+
+            self.assertEqual(response["mode"], "tool")
+            self.assertIn("selected tool answer", response["answer"])
+            select_steps = [step for step in response["trace"]["steps"] if step["name"] == "tool.select"]
+            call_steps = [step for step in response["trace"]["steps"] if step["name"] == "tool.call"]
+            self.assertEqual(select_steps[0]["detail"]["tool_id"], "lookup")
+            self.assertEqual(call_steps[0]["detail"]["tool_id"], "lookup")
+            self.assertTrue(call_steps[0]["detail"]["ok"])
+
+    def test_tool_validate_output_sanitizes_schema_allowed_fields_before_response(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            intent_config = agent_dir / "intents.toml"
+            workflow_config = agent_dir / "workflows.toml"
+            tool_config = agent_dir / "tools.toml"
+            intent_config.write_text(
+                '[[intents]]\n'
+                'id = "tool_lookup"\n'
+                'workflow = "tool_lookup"\n'
+                'keywords = ["lookup"]\n',
+                encoding="utf-8",
+            )
+            workflow_config.write_text(
+                '[[workflows]]\n'
+                'id = "tool_lookup"\n'
+                'steps = ["tool.select", "tool.call", "tool.validate_output", "response.tool_result"]\n',
+                encoding="utf-8",
+            )
+            tool_config.write_text(
+                '[[tools]]\n'
+                'id = "lookup"\n'
+                'enabled = true\n'
+                'provider = "mock"\n'
+                'allowed_intents = ["tool_lookup"]\n'
+                '[tools.mock_output]\n'
+                'answer = "schema answer"\n'
+                'secret = "drop me"\n'
+                '[tools.schema]\n'
+                'required = ["answer"]\n'
+                '[tools.schema.properties.answer]\n'
+                'type = "string"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                intent_config_path=intent_config,
+                workflow_config_path=workflow_config,
+                tool_config_path=tool_config,
+            )
+
+            response = AgentRuntime(settings).run(AgentRequest("lookup this")).to_dict()
+
+            self.assertEqual(response["mode"], "tool")
+            self.assertEqual(response["answer"], "schema answer")
+            self.assertEqual(response["metadata"]["tool_results"][0]["output"], {"answer": "schema answer"})
+            validate_steps = [step for step in response["trace"]["steps"] if step["name"] == "tool.validate_output"]
+            self.assertTrue(validate_steps[0]["detail"]["ok"])
+
+    def test_tool_validate_output_returns_tool_error_for_schema_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            intent_config = agent_dir / "intents.toml"
+            workflow_config = agent_dir / "workflows.toml"
+            tool_config = agent_dir / "tools.toml"
+            intent_config.write_text(
+                '[[intents]]\n'
+                'id = "tool_lookup"\n'
+                'workflow = "tool_lookup"\n'
+                'keywords = ["lookup"]\n',
+                encoding="utf-8",
+            )
+            workflow_config.write_text(
+                '[[workflows]]\n'
+                'id = "tool_lookup"\n'
+                'steps = ["tool.select", "tool.call", "tool.validate_output", "response.tool_result"]\n',
+                encoding="utf-8",
+            )
+            tool_config.write_text(
+                '[[tools]]\n'
+                'id = "lookup"\n'
+                'enabled = true\n'
+                'provider = "mock"\n'
+                'allowed_intents = ["tool_lookup"]\n'
+                '[tools.mock_output]\n'
+                'text = "missing required answer"\n'
+                '[tools.schema]\n'
+                'required = ["answer"]\n'
+                '[tools.schema.properties.answer]\n'
+                'type = "string"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                intent_config_path=intent_config,
+                workflow_config_path=workflow_config,
+                tool_config_path=tool_config,
+            )
+
+            response = AgentRuntime(settings).run(AgentRequest("lookup this")).to_dict()
+
+            self.assertEqual(response["mode"], "tool_error")
+            self.assertIn("missing required field answer", response["answer"])
+            validate_steps = [step for step in response["trace"]["steps"] if step["name"] == "tool.validate_output"]
+            self.assertFalse(validate_steps[0]["detail"]["ok"])
+            self.assertIn("missing required field answer", validate_steps[0]["detail"]["error"])
+
+    def test_tool_v2_adapter_and_output_schema_drive_mock_tool_response(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            intent_config = agent_dir / "intents.toml"
+            workflow_config = agent_dir / "workflows.toml"
+            tool_config = agent_dir / "tools.toml"
+            intent_config.write_text(
+                '[[intents]]\n'
+                'id = "tool_lookup"\n'
+                'workflow = "tool_lookup"\n'
+                'keywords = ["lookup"]\n',
+                encoding="utf-8",
+            )
+            workflow_config.write_text(
+                '[[workflows]]\n'
+                'id = "tool_lookup"\n'
+                'steps = ["tool.select", "tool.call", "tool.validate_output", "response.tool_result"]\n',
+                encoding="utf-8",
+            )
+            tool_config.write_text(
+                'schema_version = "tool.v2"\n'
+                '[[tools]]\n'
+                'id = "lookup"\n'
+                'enabled = true\n'
+                'adapter = "mock"\n'
+                'allowed_intents = ["tool_lookup"]\n'
+                '[tools.mock_output]\n'
+                'answer = "v2 adapter answer"\n'
+                'extra = "drop me"\n'
+                '[tools.output_schema]\n'
+                'required = ["answer"]\n'
+                '[tools.output_schema.properties.answer]\n'
+                'type = "string"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                intent_config_path=intent_config,
+                workflow_config_path=workflow_config,
+                tool_config_path=tool_config,
+            )
+
+            response = AgentRuntime(settings).run(AgentRequest("lookup this")).to_dict()
+
+            self.assertEqual(response["mode"], "tool")
+            self.assertEqual(response["answer"], "v2 adapter answer")
+            self.assertEqual(response["metadata"]["tool_results"][0]["output"], {"answer": "v2 adapter answer"})
+
     def test_build_retrieval_query_keeps_recent_user_turns(self):
         query = build_workflow_retrieval_query(
             "那地点呢？",
@@ -1301,6 +2623,155 @@ class WorkflowPipelineTests(unittest.TestCase):
             self.assertIn("run_retrieval", [step["name"] for step in payload["trace"]["steps"]])
 
 
+class ComponentRegistryTests(unittest.TestCase):
+    def test_component_registry_rejects_duplicate_and_missing_registrations(self):
+        from local_rag_agent.components import ComponentRegistry
+
+        def custom_step(context):
+            return None
+
+        registry = ComponentRegistry()
+        sink = object()
+
+        registry.register_step("custom.response", custom_step)
+        registry.register_trace_sink("memory", sink)
+
+        with self.assertRaisesRegex(ValueError, "Duplicate component registration: step custom.response"):
+            registry.register_step("custom.response", custom_step)
+        with self.assertRaisesRegex(ValueError, "Duplicate component registration: trace_sink memory"):
+            registry.register_trace_sink("memory", object())
+        with self.assertRaisesRegex(KeyError, "Missing component registration: generator missing"):
+            registry.get_generator("missing")
+        self.assertIs(registry.get_trace_sink("memory"), sink)
+
+    def test_runtime_construction_uses_component_registry_for_steps_and_providers(self):
+        from local_rag_agent.components import ComponentRegistry
+
+        class FakeRetriever:
+            def retrieve(self, settings, query):
+                return []
+
+        class FakeGenerator:
+            def generate(self, settings, question, retrieved_chunks, model_client=None, history=None):
+                return None
+
+        class FakePolicyGuard:
+            policies = {}
+
+            def evaluate(self, *args, **kwargs):
+                return None
+
+        class FakeToolProvider:
+            tools = {}
+
+            def call(self, *args, **kwargs):
+                return None
+
+        def custom_response(context):
+            context.response = AgentResponse(
+                answer="custom registry response",
+                mode="custom",
+                intent=context.intent_decision.intent.id,
+                workflow=context.intent_decision.intent.workflow,
+                sources=[],
+                trace=context.trace,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            workflow_config = root / "workflows.toml"
+            workflow_config.write_text(
+                '[[workflows]]\n'
+                'id = "custom_flow"\n'
+                'steps = ["custom.response"]\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=root / "prompt.md",
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                workflow_config_path=workflow_config,
+                default_workflow="custom_flow",
+                retrieval_provider="fake_retriever",
+                generation_provider="fake_generator",
+            )
+            policy_guard = FakePolicyGuard()
+            tool_provider = FakeToolProvider()
+            sink = object()
+            registry = ComponentRegistry()
+            registry.register_step("custom.response", custom_response)
+            registry.register_retriever("fake_retriever", lambda settings: FakeRetriever())
+            registry.register_generator("fake_generator", lambda settings: FakeGenerator())
+            registry.register_policy_provider("keyword", lambda settings: policy_guard)
+            registry.register_tool_provider("configured", lambda settings: tool_provider)
+            registry.register_trace_sink("memory", sink)
+
+            runtime = AgentRuntime(settings, components=registry)
+            response = runtime.run(AgentRequest(message="hello"))
+
+            self.assertEqual(response.mode, "custom")
+            self.assertEqual(response.answer, "custom registry response")
+            self.assertIsInstance(runtime.retriever_provider.retriever, FakeRetriever)
+            self.assertIsInstance(runtime.generator_provider.generator, FakeGenerator)
+            self.assertIs(runtime.policy_guard, policy_guard)
+            self.assertIs(runtime.tool_provider, tool_provider)
+            self.assertIs(runtime.components.get_trace_sink("memory"), sink)
+
+    def test_runtime_loads_plugin_module_that_registers_workflow_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            agent_dir = root / "agent"
+            plugin_dir = root / "agent_plugins"
+            agent_dir.mkdir()
+            plugin_dir.mkdir()
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+            (plugin_dir / "custom_steps.py").write_text(
+                "from local_rag_agent.types import AgentResponse\n"
+                "\n"
+                "def plugin_response(context):\n"
+                "    context.response = AgentResponse(\n"
+                "        answer='plugin response',\n"
+                "        mode='plugin',\n"
+                "        intent=context.intent_decision.intent.id,\n"
+                "        workflow=context.intent_decision.intent.workflow,\n"
+                "        sources=[],\n"
+                "        trace=context.trace,\n"
+                "    )\n"
+                "\n"
+                "def register(registry):\n"
+                "    registry.register_step('plugin.response', plugin_response)\n",
+                encoding="utf-8",
+            )
+            workflow_config = agent_dir / "workflows.toml"
+            workflow_config.write_text(
+                '[[workflows]]\n'
+                'id = "plugin_flow"\n'
+                'steps = ["plugin.response"]\n',
+                encoding="utf-8",
+            )
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[runtime]\n'
+                'default_workflow = "plugin_flow"\n'
+                'workflow_config = "agent/workflows.toml"\n'
+                '[plugins]\n'
+                'modules = ["agent_plugins.custom_steps"]\n',
+                encoding="utf-8",
+            )
+
+            runtime = AgentRuntime.from_project(root, config_path)
+            response = runtime.run(AgentRequest(message="hello"))
+
+            self.assertEqual(response.mode, "plugin")
+            self.assertEqual(response.answer, "plugin response")
+
+
 class RegressionTests(unittest.TestCase):
     def test_parse_regression_table_extracts_question_column(self):
         markdown = "| 编号 | 问题 | 预期要点 |\n| --- | --- | --- |\n| C01 | 上课时间？ | 星期三 |\n"
@@ -1355,7 +2826,15 @@ class RegressionTests(unittest.TestCase):
                     "mode": "extractive",
                     "intent": "knowledge_qa",
                     "workflow": "rag_qa",
-                    "trace": {"steps": [{"name": "apply_policy", "detail": {"policy_id": ""}}]},
+                    "trace": {
+                        "config_versions": {"runtime": "runtime.v1"},
+                        "steps": [
+                            {"name": "route_intent", "status": "ok", "detail": {}},
+                            {"name": "start_workflow", "status": "ok", "detail": {}},
+                            {"name": "run_retrieval", "status": "ok", "detail": {"source_count": 1}},
+                            {"name": "apply_policy", "status": "ok", "detail": {"policy_id": ""}},
+                        ],
+                    },
                 },
                 {
                     "id": "C02",
@@ -1365,7 +2844,16 @@ class RegressionTests(unittest.TestCase):
                     "mode": "extractive",
                     "intent": "knowledge_qa",
                     "workflow": "rag_qa",
-                    "trace": {"steps": [{"name": "tool.call", "detail": {"ok": True}}]},
+                    "trace": {
+                        "config_versions": {"runtime": "runtime.v1"},
+                        "steps": [
+                            {"name": "route_intent", "status": "ok", "detail": {}},
+                            {"name": "start_workflow", "status": "ok", "detail": {}},
+                            {"name": "run_retrieval", "status": "ok", "detail": {"source_count": 0}},
+                            {"name": "apply_policy", "status": "ok", "detail": {"policy_id": ""}},
+                            {"name": "tool.call", "status": "ok", "detail": {"ok": True}},
+                        ],
+                    },
                 },
             ]
             path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
@@ -1375,13 +2863,69 @@ class RegressionTests(unittest.TestCase):
             self.assertFalse(summary["ok"])
             self.assertEqual(summary["question_count"], 2)
             self.assertEqual(summary["missing_source_count"], 1)
-            self.assertEqual(summary["policy_trace_count"], 1)
+            self.assertEqual(summary["policy_trace_count"], 2)
             self.assertEqual(summary["tool_trace_count"], 1)
             self.assertEqual(summary["failures"][0]["id"], "C02")
 
+    def test_summarize_regression_report_fails_missing_release_trace_contracts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "results.jsonl"
+            records = [
+                {
+                    "id": "C01",
+                    "question": "missing route?",
+                    "answer": "ok",
+                    "sources": [{"source": "facts.md"}],
+                    "mode": "extractive",
+                    "intent": "knowledge_qa",
+                    "workflow": "rag_qa",
+                    "trace": {
+                        "config_versions": {},
+                        "steps": [{"name": "run_retrieval", "detail": {"source_count": 1}}],
+                    },
+                },
+                {
+                    "id": "C02",
+                    "question": "tool trace?",
+                    "answer": "ok",
+                    "sources": [],
+                    "mode": "tool",
+                    "intent": "tool_lookup",
+                    "workflow": "tool_lookup",
+                    "trace": {
+                        "config_versions": {"runtime": "runtime.v1"},
+                        "steps": [
+                            {"name": "route_intent", "status": "ok", "detail": {}},
+                            {"name": "start_workflow", "status": "ok", "detail": {}},
+                        ],
+                    },
+                },
+            ]
+            path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+
+            summary = summarize_regression_report(path)
+
+            self.assertFalse(summary["ok"])
+            failure_reasons = {failure["reason"] for failure in summary["failures"]}
+            self.assertIn("missing_config_versions", failure_reasons)
+            self.assertIn("missing_route_intent_trace", failure_reasons)
+            self.assertIn("missing_start_workflow_trace", failure_reasons)
+            self.assertIn("missing_policy_trace", failure_reasons)
+            self.assertIn("missing_tool_trace", failure_reasons)
+
     def test_release_gate_cli_returns_nonzero_for_missing_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
-            report = Path(tmp) / "results.jsonl"
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n',
+                encoding="utf-8",
+            )
+            report = root / "results.jsonl"
             failure_record = {
                 "id": "C01",
                 "question": "unsupported?",
@@ -1390,7 +2934,15 @@ class RegressionTests(unittest.TestCase):
                 "mode": "extractive",
                 "intent": "knowledge_qa",
                 "workflow": "rag_qa",
-                "trace": {"steps": []},
+                "trace": {
+                    "config_versions": {"runtime": "runtime.v1"},
+                    "steps": [
+                        {"name": "route_intent", "status": "ok", "detail": {}},
+                        {"name": "start_workflow", "status": "ok", "detail": {}},
+                        {"name": "run_retrieval", "status": "ok", "detail": {"source_count": 0}},
+                        {"name": "apply_policy", "status": "ok", "detail": {"policy_id": ""}},
+                    ],
+                },
             }
             ok_record = {
                 "id": "C02",
@@ -1400,22 +2952,332 @@ class RegressionTests(unittest.TestCase):
                 "mode": "extractive",
                 "intent": "knowledge_qa",
                 "workflow": "rag_qa",
-                "trace": {"steps": []},
+                "trace": {
+                    "config_versions": {"runtime": "runtime.v1"},
+                    "steps": [
+                        {"name": "route_intent", "status": "ok", "detail": {}},
+                        {"name": "start_workflow", "status": "ok", "detail": {}},
+                        {"name": "run_retrieval", "status": "ok", "detail": {"source_count": 1}},
+                        {"name": "apply_policy", "status": "ok", "detail": {"policy_id": ""}},
+                    ],
+                },
             }
 
             report.write_text(json.dumps(failure_record), encoding="utf-8")
             with contextlib.redirect_stdout(io.StringIO()):
-                failed_exit = cli_main(["release-gate", "--report", str(report)])
+                failed_exit = cli_main(
+                    ["release-gate", "--project", str(root), "--config", str(config_path), "--report", str(report)]
+                )
 
             report.write_text(json.dumps(ok_record), encoding="utf-8")
             with contextlib.redirect_stdout(io.StringIO()):
-                ok_exit = cli_main(["release-gate", "--report", str(report)])
+                ok_exit = cli_main(
+                    ["release-gate", "--project", str(root), "--config", str(config_path), "--report", str(report)]
+                )
 
             self.assertEqual(failed_exit, 1)
             self.assertEqual(ok_exit, 0)
 
+    def test_release_gate_cli_validates_config_before_reading_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            missing_report = root / "missing-results.jsonl"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[retrieval]\n'
+                'provider = "unknown"\n',
+                encoding="utf-8",
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                exit_code = cli_main(
+                    [
+                        "release-gate",
+                        "--project",
+                        str(root),
+                        "--config",
+                        str(config_path),
+                        "--report",
+                        str(missing_report),
+                    ]
+                )
+
+            payload = json.loads(stdout.getvalue())
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(payload["stage"], "validate")
+            self.assertEqual(payload["validation"]["errors"][0]["code"], "UNKNOWN_RETRIEVER_PROVIDER")
+
+    def test_smoke_cli_runs_template_runtime_gate_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / "agent-project"
+            shutil.copytree(Path("templates/agent-project"), root)
+            config_path = root / "runtime.toml"
+            questions_path = root / "examples" / "core-regression-questions.md"
+
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                exit_code = cli_main(
+                    [
+                        "smoke",
+                        "--project",
+                        str(root),
+                        "--config",
+                        str(config_path),
+                        "--questions",
+                        str(questions_path),
+                    ]
+                )
+
+            payload = json.loads(stdout.getvalue())
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(payload["validate"]["ok"])
+            self.assertGreater(payload["ingest"]["chunk_count"], 0)
+            self.assertGreater(payload["regression"]["question_count"], 0)
+            self.assertTrue(payload["release_gate"]["ok"])
+            self.assertTrue(payload["http"]["healthz"]["ok"])
+            self.assertTrue(payload["http"]["version"]["ok"])
+
 
 class ServerPageTests(unittest.TestCase):
+    def test_http_health_version_and_validate_endpoints_return_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n',
+                encoding="utf-8",
+            )
+            settings = load_settings(root, config_path)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(settings))
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            self.addCleanup(lambda: server.server_close())
+            self.addCleanup(lambda: thread.join(timeout=2))
+            self.addCleanup(server.shutdown)
+
+            health = self._get_json(f"{base_url}/healthz")
+            version = self._get_json(f"{base_url}/version")
+            validation = self._get_json(f"{base_url}/api/v1/validate")
+
+            self.assertEqual(health["status"], "ok")
+            self.assertEqual(health["service"], "local_rag_agent")
+            self.assertIn("version", version)
+            self.assertEqual(version["service"], "local_rag_agent")
+            self.assertTrue(validation["ok"])
+            self.assertEqual(validation["errors"], [])
+
+    def test_http_validate_endpoint_falls_back_to_loaded_settings_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            settings = Settings(
+                project_root=root,
+                prompt_path=root / "prompt.md",
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(settings))
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            self.addCleanup(lambda: server.server_close())
+            self.addCleanup(lambda: thread.join(timeout=2))
+            self.addCleanup(server.shutdown)
+
+            payload = self._get_json(f"{base_url}/api/v1/validate")
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["errors"], [])
+
+    def test_http_chat_v1_returns_agent_response_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text(
+                '{"chunks":[{"chunk_id":"facts.md#0","source":"facts.md","title":"Facts","content":"Answer: HTTP chat works."}]}',
+                encoding="utf-8",
+            )
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(settings))
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            self.addCleanup(lambda: server.server_close())
+            self.addCleanup(lambda: thread.join(timeout=2))
+            self.addCleanup(server.shutdown)
+
+            payload = self._post_json(
+                f"{base_url}/api/v1/chat",
+                {
+                    "message": "http chat?",
+                    "history": [{"role": "user", "content": "previous"}],
+                    "metadata": {"request_id": "http-1"},
+                },
+            )
+
+            self.assertIn("HTTP chat works.", payload["answer"])
+            self.assertEqual(payload["mode"], "extractive")
+            self.assertEqual(payload["intent"], "knowledge_qa")
+            self.assertEqual(payload["workflow"], "rag_qa")
+            self.assertEqual(payload["sources"][0]["source"], "facts.md")
+            self.assertEqual(payload["trace"]["request_id"], "http-1")
+            self.assertIn("route_intent", [step["name"] for step in payload["trace"]["steps"]])
+
+    def test_http_chat_v1_returns_error_envelope_for_bad_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            settings = Settings(
+                project_root=root,
+                prompt_path=root / "prompt.md",
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(settings))
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            self.addCleanup(lambda: server.server_close())
+            self.addCleanup(lambda: thread.join(timeout=2))
+            self.addCleanup(server.shutdown)
+
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self._post_json(f"{base_url}/api/v1/chat", {"message": ""})
+
+            self.assertEqual(error.exception.code, 400)
+            payload = json.loads(error.exception.read().decode("utf-8"))
+            error.exception.close()
+            self.assertEqual(payload["error"]["code"], "BAD_REQUEST")
+            self.assertIn("message", payload["error"]["message"])
+
+    def test_http_chat_v1_enforces_token_auth_body_limit_and_cors_allowlist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                server_request_body_limit_bytes=64,
+                server_auth_token="secret-token",
+                server_cors_allowlist=["https://example.test"],
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text(
+                '{"chunks":[{"chunk_id":"facts.md#0","source":"facts.md","content":"Answer: secure."}]}',
+                encoding="utf-8",
+            )
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(settings))
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            self.addCleanup(lambda: server.server_close())
+            self.addCleanup(lambda: thread.join(timeout=2))
+            self.addCleanup(server.shutdown)
+
+            with self.assertRaises(urllib.error.HTTPError) as unauthorized:
+                self._post_json(
+                    f"{base_url}/api/v1/chat",
+                    {"message": "secure?"},
+                    headers={"Origin": "https://example.test"},
+                )
+            self.assertEqual(unauthorized.exception.code, 401)
+            self.assertEqual(unauthorized.exception.headers["Access-Control-Allow-Origin"], "https://example.test")
+            unauthorized_payload = json.loads(unauthorized.exception.read().decode("utf-8"))
+            unauthorized.exception.close()
+            self.assertEqual(unauthorized_payload["error"]["code"], "AUTH_REQUIRED")
+
+            with self.assertRaises(urllib.error.HTTPError) as too_large:
+                self._post_json(
+                    f"{base_url}/api/v1/chat",
+                    {"message": "x" * 200},
+                    headers={"Authorization": "Bearer secret-token"},
+                )
+            self.assertEqual(too_large.exception.code, 413)
+            too_large_payload = json.loads(too_large.exception.read().decode("utf-8"))
+            too_large.exception.close()
+            self.assertEqual(too_large_payload["error"]["code"], "REQUEST_TOO_LARGE")
+
+    def test_http_chat_v1_uses_auth_and_rate_limit_hooks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            settings = Settings(
+                project_root=root,
+                prompt_path=root / "prompt.md",
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+            hooks = ServerHooks(
+                authenticate=lambda handler, settings: True,
+                rate_limit=lambda handler, settings: False,
+            )
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(settings, hooks=hooks))
+            thread = threading.Thread(target=server.serve_forever)
+            thread.daemon = True
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+            self.addCleanup(lambda: server.server_close())
+            self.addCleanup(lambda: thread.join(timeout=2))
+            self.addCleanup(server.shutdown)
+
+            with self.assertRaises(urllib.error.HTTPError) as limited:
+                self._post_json(f"{base_url}/api/v1/chat", {"message": "limited"})
+
+            self.assertEqual(limited.exception.code, 429)
+            payload = json.loads(limited.exception.read().decode("utf-8"))
+            limited.exception.close()
+            self.assertEqual(payload["error"]["code"], "RATE_LIMITED")
+
+    def _get_json(self, url: str) -> dict[str, object]:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _post_json(
+        self,
+        url: str,
+        payload: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        data = json.dumps(payload).encode("utf-8")
+        request_headers = {"Content-Type": "application/json"}
+        request_headers.update(headers or {})
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers=request_headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     def test_render_workspace_home_matches_server_entry_structure(self):
         page = render_workspace_home()
 
@@ -1495,6 +3357,48 @@ class CliWorkflowTests(unittest.TestCase):
         configure_output_stream(stream)
 
         self.assertEqual(stream.calls, [{"encoding": "utf-8", "errors": "replace"}])
+
+    def test_validate_cli_returns_zero_and_structured_payload_for_template_project(self):
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            exit_code = cli_main(
+                [
+                    "validate",
+                    "--project",
+                    "templates/agent-project",
+                    "--config",
+                    "templates/agent-project/runtime.toml",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["errors"], [])
+
+    def test_validate_cli_returns_nonzero_for_contract_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                'schema_version = "runtime.v1"\n'
+                '[project]\n'
+                'prompt_path = "agent/system-prompt.md"\n'
+                'knowledge_root = "knowledge_base"\n'
+                'manifest_path = "knowledge_base/_manifests/current-upload-manifest.md"\n'
+                '[retrieval]\n'
+                'provider = "vector"\n',
+                encoding="utf-8",
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                exit_code = cli_main(["validate", "--project", str(root), "--config", str(config_path)])
+
+        payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["errors"][0]["code"], "UNKNOWN_RETRIEVER_PROVIDER")
 
     def test_build_retrieval_query_includes_recent_user_turns_for_followups(self):
         query = build_retrieval_query(

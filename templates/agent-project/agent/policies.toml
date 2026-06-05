@@ -1,4 +1,4 @@
-schema_version = "policy.v1"
+schema_version = "policy.v2"
 
 [[policies]]
 id = "academic_integrity"

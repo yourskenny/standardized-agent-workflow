@@ -1,8 +1,10 @@
-schema_version = "workflow.v1"
+schema_version = "workflow.v2"
 
 [[workflows]]
 id = "rag_qa"
 description = "Source-backed question answering over the project knowledge base."
+requires_sources = true
+terminal_steps = ["build_policy_response", "build_response"]
 steps = [
   "prepare_retrieval_query",
   "run_retrieval",
@@ -15,6 +17,8 @@ steps = [
 [[workflows]]
 id = "retrieval_debug"
 description = "Return ranked retrieval evidence without generation."
+requires_sources = false
+terminal_steps = ["build_retrieval_debug_response"]
 steps = [
   "prepare_retrieval_query",
   "run_retrieval",
@@ -24,6 +28,8 @@ steps = [
 [[workflows]]
 id = "refusal_with_guidance"
 description = "Refuse out-of-bound requests and offer allowed alternatives."
+requires_sources = false
+terminal_steps = ["build_policy_response"]
 steps = [
   "apply_policy",
   "build_policy_response",
