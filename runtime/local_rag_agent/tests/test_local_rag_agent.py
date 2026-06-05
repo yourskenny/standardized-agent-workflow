@@ -2335,6 +2335,123 @@ class WorkflowPipelineTests(unittest.TestCase):
                 ["prepare_retrieval_query", "run_retrieval", "build_retrieval_debug_response"],
             )
 
+    def test_tool_runtime_authorizes_disabled_and_intent_restricted_tools_before_calling_provider(self):
+        from local_rag_agent.tool_runtime import ToolRuntime
+        from local_rag_agent.tools import ToolDefinition, ToolResult
+
+        class RecordingProvider:
+            def __init__(self):
+                self.calls = []
+                self.tools = {
+                    "disabled": ToolDefinition(id="disabled", enabled=False, adapter="mock"),
+                    "restricted": ToolDefinition(
+                        id="restricted",
+                        enabled=True,
+                        adapter="mock",
+                        allowed_intents=["other_intent"],
+                    ),
+                }
+
+            def call(self, tool_id, arguments, intent_id=""):
+                self.calls.append((tool_id, arguments, intent_id))
+                return ToolResult(tool_id=tool_id, ok=True, output={"answer": "called"})
+
+        settings = Settings(
+            project_root=REPO_ROOT,
+            prompt_path=REPO_ROOT / "prompt.md",
+            manifest_path=REPO_ROOT / "manifest.md",
+            knowledge_root=REPO_ROOT / "knowledge_base",
+            index_path=REPO_ROOT / ".local_rag_agent" / "index.json",
+        )
+        decision = IntentRouter(
+            load_intents_from_inline(
+                '[[intents]]\n'
+                'id = "tool_lookup"\n'
+                'workflow = "tool_lookup"\n'
+                'keywords = ["lookup"]\n'
+            )
+        ).route("lookup")
+        context = WorkflowContext(
+            settings,
+            AgentRequest("lookup this"),
+            decision,
+            AgentTrace(intent=decision.intent.id, workflow=decision.intent.workflow),
+        )
+        provider = RecordingProvider()
+        runtime = ToolRuntime(provider)
+
+        disabled, _ = runtime.call("disabled", context)
+        restricted, _ = runtime.call("restricted", context)
+
+        self.assertFalse(disabled.ok)
+        self.assertEqual(disabled.error, "Tool is disabled: disabled")
+        self.assertFalse(restricted.ok)
+        self.assertEqual(restricted.error, "Tool is not allowed for intent: tool_lookup")
+        self.assertEqual(provider.calls, [])
+
+    def test_tool_runtime_blocks_approval_required_tools_and_records_audit_event(self):
+        from local_rag_agent.tool_runtime import ToolRuntime
+        from local_rag_agent.tools import ToolDefinition, ToolResult
+
+        class RecordingProvider:
+            def __init__(self):
+                self.calls = []
+                self.tools = {
+                    "lookup": ToolDefinition(
+                        id="lookup",
+                        enabled=True,
+                        adapter="mock",
+                        allowed_intents=["tool_lookup"],
+                        requires_approval=True,
+                    )
+                }
+
+            def call(self, tool_id, arguments, intent_id=""):
+                self.calls.append((tool_id, arguments, intent_id))
+                return ToolResult(tool_id=tool_id, ok=True, output={"answer": "called"})
+
+        settings = Settings(
+            project_root=REPO_ROOT,
+            prompt_path=REPO_ROOT / "prompt.md",
+            manifest_path=REPO_ROOT / "manifest.md",
+            knowledge_root=REPO_ROOT / "knowledge_base",
+            index_path=REPO_ROOT / ".local_rag_agent" / "index.json",
+        )
+        decision = IntentRouter(
+            load_intents_from_inline(
+                '[[intents]]\n'
+                'id = "tool_lookup"\n'
+                'workflow = "tool_lookup"\n'
+                'keywords = ["lookup"]\n'
+            )
+        ).route("lookup")
+        context = WorkflowContext(
+            settings,
+            AgentRequest("lookup this"),
+            decision,
+            AgentTrace(intent=decision.intent.id, workflow=decision.intent.workflow),
+        )
+        audit_events = []
+        provider = RecordingProvider()
+
+        result, arguments = ToolRuntime(provider, audit_sink=audit_events.append).call("lookup", context)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "Tool requires approval: lookup")
+        self.assertEqual(arguments, {"query": "lookup this"})
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(
+            audit_events,
+            [
+                {
+                    "event": "tool.approval_required",
+                    "tool_id": "lookup",
+                    "intent": "tool_lookup",
+                    "arguments": {"query": "lookup this"},
+                }
+            ],
+        )
+
     def test_workflow_registry_rejects_unknown_configured_step(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "workflows.toml"
@@ -2455,6 +2572,66 @@ class WorkflowPipelineTests(unittest.TestCase):
             self.assertEqual(select_steps[0]["detail"]["tool_id"], "lookup")
             self.assertEqual(call_steps[0]["detail"]["tool_id"], "lookup")
             self.assertTrue(call_steps[0]["detail"]["ok"])
+
+    def test_tool_runtime_maps_request_message_and_metadata_into_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            agent_dir = root / "agent"
+            agent_dir.mkdir()
+            intent_config = agent_dir / "intents.toml"
+            workflow_config = agent_dir / "workflows.toml"
+            tool_config = agent_dir / "tools.toml"
+            intent_config.write_text(
+                '[[intents]]\n'
+                'id = "tool_lookup"\n'
+                'workflow = "tool_lookup"\n'
+                'keywords = ["lookup"]\n',
+                encoding="utf-8",
+            )
+            workflow_config.write_text(
+                'schema_version = "workflow.v1"\n'
+                '[[workflows]]\n'
+                'id = "tool_lookup"\n'
+                'steps = ["tool.select", "tool.call", "response.tool_result"]\n',
+                encoding="utf-8",
+            )
+            tool_config.write_text(
+                'schema_version = "tool.v2"\n'
+                '[[tools]]\n'
+                'id = "lookup"\n'
+                'enabled = true\n'
+                'adapter = "mock"\n'
+                'allowed_intents = ["tool_lookup"]\n'
+                '[tools.input_mapping]\n'
+                'query = "$message"\n'
+                'user_id = "$metadata.user_id"\n'
+                '[tools.mock_output]\n'
+                'answer = "mapped tool answer"\n',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                intent_config_path=intent_config,
+                workflow_config_path=workflow_config,
+                tool_config_path=tool_config,
+            )
+
+            response = AgentRuntime(settings).run(
+                AgentRequest("lookup my calendar", metadata={"user_id": "user-123"})
+            ).to_dict()
+
+            self.assertEqual(response["mode"], "tool")
+            call_steps = [step for step in response["trace"]["steps"] if step["name"] == "tool.call"]
+            self.assertEqual(
+                call_steps[0]["detail"]["arguments"],
+                {"query": "lookup my calendar", "user_id": "user-123"},
+            )
 
     def test_tool_validate_output_sanitizes_schema_allowed_fields_before_response(self):
         with tempfile.TemporaryDirectory() as tmp:

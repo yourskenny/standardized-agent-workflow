@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..ports import GeneratorProvider, RetrieverProvider
+from ..tool_runtime import ToolRuntime
 from ..types import AgentResponse, SourceReference
 from .runner import WorkflowContext, WorkflowStep
 
@@ -133,27 +134,23 @@ def call_first_tool(context: WorkflowContext) -> None:
 
 
 def select_tool(context: WorkflowContext) -> None:
-    tool_ids = sorted(context.tool_provider.tools)
-    context.selected_tool_id = tool_ids[0] if tool_ids else ""
+    context.selected_tool_id = ToolRuntime(context.tool_provider).select(context)
     context.trace.add_step("tool.select", {"tool_id": context.selected_tool_id})
 
 
 def call_tool(context: WorkflowContext) -> None:
-    result = context.tool_provider.call(
-        context.selected_tool_id,
-        {"query": context.request.message},
-        intent_id=context.intent_decision.intent.id,
-    )
+    result, arguments = ToolRuntime(context.tool_provider).call(context.selected_tool_id, context)
     payload = {
         "tool_id": result.tool_id,
         "ok": result.ok,
         "output": result.output,
         "error": result.error,
+        "arguments": arguments,
     }
     context.tool_results.append(payload)
     context.trace.add_step(
         "tool.call",
-        {"tool_id": result.tool_id, "ok": result.ok, "error": result.error},
+        {"tool_id": result.tool_id, "ok": result.ok, "error": result.error, "arguments": arguments},
     )
 
 
