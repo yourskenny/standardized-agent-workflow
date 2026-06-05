@@ -11,10 +11,12 @@
 5. 配置 `agent/policies.toml`，维护拒答、无证据和高风险问题策略。
 6. 配置 `agent/tools.toml`。工具默认禁用，只有实现并验证后再启用。
 7. 编写 `agent/system-prompt.md` 和 `agent/answer-policies.md`。
-8. 整理 `knowledge_base/domain_specific/current/`。
-9. 整理 `knowledge_base/stable_materials/`。
-10. 整理 `knowledge_base/policy_and_boundaries/`。
-11. 更新 `knowledge_base/_manifests/current-upload-manifest.md`。
-12. 运行 `examples/core-regression-questions.md`。
-13. 将结果写入 `maintenance/test-records/`。
-14. 将变更写入 `maintenance/update-log.md`。
+8. 可选：在 `skills/<id>/manifest.toml` 和 `SKILL.md` 中维护可被提示编译器选中的流程性技能。
+9. 可选：在 `memory/*.md` 中维护只读稳定偏好；需要变更时先写入 `memory/_proposals/`。
+10. 整理 `knowledge_base/domain_specific/current/`。
+11. 整理 `knowledge_base/stable_materials/`。
+12. 整理 `knowledge_base/policy_and_boundaries/`。
+13. 更新 `knowledge_base/_manifests/current-upload-manifest.md`。
+14. 运行 `examples/core-regression-questions.md`。
+15. 将结果写入 `maintenance/test-records/`。
+16. 将变更写入 `maintenance/update-log.md`。

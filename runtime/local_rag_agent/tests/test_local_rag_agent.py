@@ -2677,6 +2677,77 @@ class ComponentPortTests(unittest.TestCase):
             self.assertEqual(prompt_blocks[-1]["source"], "request.message")
             self.assertIn("source answer", client.messages[-1]["content"])
 
+    def test_skill_registry_loads_manifest_and_skill_text(self):
+        from local_rag_agent.skills.registry import SkillRegistry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            skill_dir = root / "skills" / "refund"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "manifest.toml").write_text(
+                'id = "refund"\n'
+                'name = "Refund Skill"\n'
+                'description = "Handle refund policy questions."\n'
+                'keywords = ["refund"]\n',
+                encoding="utf-8",
+            )
+            (skill_dir / "SKILL.md").write_text("Use the refund policy before answering.", encoding="utf-8")
+
+            registry = SkillRegistry.from_project(root)
+
+            selected = registry.select("refund approval")
+            self.assertEqual(selected[0].id, "refund")
+            self.assertIn("refund policy", selected[0].text)
+
+    def test_prompt_compiler_includes_selected_skill_block(self):
+        from local_rag_agent.prompt.compiler import compile_prompt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            skill_dir = root / "skills" / "refund"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "manifest.toml").write_text(
+                'id = "refund"\n'
+                'name = "Refund Skill"\n'
+                'description = "Handle refund policy questions."\n'
+                'keywords = ["refund"]\n',
+                encoding="utf-8",
+            )
+            (skill_dir / "SKILL.md").write_text("Use the refund policy before answering.", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+
+            compiled = compile_prompt(settings, "refund approval", [])
+
+            skill_blocks = [block for block in compiled.blocks if block.type == "skill"]
+            self.assertEqual(skill_blocks[0].source, "skill:refund")
+            self.assertIn("refund policy", skill_blocks[0].text)
+
+    def test_memory_markdown_loader_is_read_only_without_proposal_mode(self):
+        from local_rag_agent.memory.markdown import load_memory, write_memory_proposal
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            memory_dir = root / "memory"
+            memory_dir.mkdir()
+            (memory_dir / "profile.md").write_text("Stable preference.", encoding="utf-8")
+
+            entries = load_memory(root)
+
+            self.assertEqual(entries[0].source, "memory/profile.md")
+            self.assertEqual(entries[0].text, "Stable preference.")
+            with self.assertRaises(PermissionError):
+                write_memory_proposal(root, "profile.md", "Rewrite memory.", proposal_mode=False)
+            proposal = write_memory_proposal(root, "profile.md", "Rewrite memory.", proposal_mode=True)
+            self.assertEqual(proposal.relative_to(root).as_posix(), "memory/_proposals/profile.md")
+
 
 class WorkflowPipelineTests(unittest.TestCase):
     def test_workflow_facade_reexports_split_definition_runner_registry_and_steps_modules(self):

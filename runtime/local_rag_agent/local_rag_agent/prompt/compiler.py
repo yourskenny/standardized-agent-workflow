@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from ..config import Settings
 from .blocks import PromptBlock
 from .budget import trim_blocks
+from ..skills.registry import SkillRegistry
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,9 @@ def compile_prompt(
     system_prompt = settings.prompt_path.read_text(encoding="utf-8") if settings.prompt_path.exists() else ""
     if system_prompt.strip():
         blocks.append(PromptBlock(source=str(settings.prompt_path), type="stable", text=system_prompt.strip()))
+    for skill in SkillRegistry.from_project(settings.project_root).select(question):
+        if skill.text.strip():
+            blocks.append(PromptBlock(source=f"skill:{skill.id}", type="skill", text=skill.text.strip()))
     for index, chunk in enumerate(retrieved_chunks, start=1):
         source = str(chunk.get("source", "") or f"chunk-{index}")
         title = str(chunk.get("title", ""))
