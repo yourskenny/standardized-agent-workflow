@@ -2526,6 +2526,100 @@ class ComponentPortTests(unittest.TestCase):
             self.assertEqual(generate_step["detail"]["api_key_env"], "LOCAL_RAG_TEST_MODEL_KEY")
             self.assertNotIn("super-secret-token", json.dumps(payload, ensure_ascii=False))
 
+    def test_prompt_compiler_orders_stable_context_and_volatile_blocks(self):
+        from local_rag_agent.prompt.compiler import compile_prompt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+            )
+
+            compiled = compile_prompt(
+                settings,
+                "What now?",
+                [{"chunk_id": "facts.md#0", "source": "facts.md", "title": "Facts", "content": "Answer: use facts."}],
+            )
+
+            self.assertEqual([block.type for block in compiled.blocks], ["stable", "context", "volatile"])
+            self.assertEqual(compiled.blocks[0].source, str(prompt))
+            self.assertEqual(compiled.blocks[1].source, "facts.md")
+            self.assertEqual(compiled.blocks[2].source, "request.message")
+
+    def test_prompt_budget_trims_context_blocks_deterministically(self):
+        from local_rag_agent.prompt.blocks import PromptBlock
+        from local_rag_agent.prompt.budget import trim_blocks
+
+        blocks = [
+            PromptBlock(source="system", type="stable", text="one two", token_count=2),
+            PromptBlock(source="ctx-1", type="context", text="a b c", token_count=3),
+            PromptBlock(source="ctx-2", type="context", text="d e f", token_count=3),
+            PromptBlock(source="request", type="volatile", text="question", token_count=1),
+        ]
+
+        trimmed = trim_blocks(blocks, max_tokens=6)
+
+        self.assertEqual([block.source for block in trimmed], ["system", "ctx-1", "request"])
+
+    def test_prompt_budget_trims_repeated_context_sources_by_position(self):
+        from local_rag_agent.prompt.blocks import PromptBlock
+        from local_rag_agent.prompt.budget import trim_blocks
+
+        blocks = [
+            PromptBlock(source="system", type="stable", text="one two", token_count=2),
+            PromptBlock(source="facts.md", type="context", text="a b c", token_count=3),
+            PromptBlock(source="facts.md", type="context", text="d e f", token_count=3),
+            PromptBlock(source="request", type="volatile", text="question", token_count=1),
+        ]
+
+        trimmed = trim_blocks(blocks, max_tokens=6)
+
+        self.assertEqual([block.text for block in trimmed], ["one two", "a b c", "question"])
+
+    def test_runtime_trace_records_prompt_block_source_and_type_for_model_generation(self):
+        class FakeModelClient:
+            def __init__(self):
+                self.messages = []
+
+            def chat(self, messages):
+                self.messages = messages
+                return "model answer"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                generation_provider="openai_compatible",
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text(
+                '{"chunks":[{"chunk_id":"facts.md#0","source":"facts.md","title":"Facts","content":"Answer: source answer."}]}',
+                encoding="utf-8",
+            )
+            client = FakeModelClient()
+
+            response = AgentRuntime(settings, model_client=client).run(AgentRequest("source answer"))
+
+            payload = response.to_dict()
+            generate_step = next(step for step in payload["trace"]["steps"] if step["name"] == "generate_answer")
+            prompt_blocks = generate_step["detail"]["prompt_blocks"]
+            self.assertEqual(prompt_blocks[0]["type"], "stable")
+            self.assertTrue(any(block["source"] == "facts.md" and block["type"] == "context" for block in prompt_blocks))
+            self.assertEqual(prompt_blocks[-1]["source"], "request.message")
+            self.assertIn("source answer", client.messages[-1]["content"])
+
 
 class WorkflowPipelineTests(unittest.TestCase):
     def test_workflow_facade_reexports_split_definition_runner_registry_and_steps_modules(self):

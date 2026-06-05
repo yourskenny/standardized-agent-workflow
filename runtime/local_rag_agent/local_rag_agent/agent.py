@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .config import Settings
+from .prompt.compiler import CompiledPrompt
 
 
 LOCAL_RUNTIME_INSTRUCTION = """你正在通过本地 RAG 运行时回答问题。
@@ -14,6 +15,7 @@ def answer_question(
     retrieved_chunks: list[dict[str, object]],
     model_client: object | None = None,
     history: list[dict[str, object]] | None = None,
+    compiled_prompt: CompiledPrompt | None = None,
 ) -> dict[str, object]:
     sources = [_source_payload(chunk) for chunk in retrieved_chunks]
     if model_client is None:
@@ -23,7 +25,7 @@ def answer_question(
             "mode": "extractive",
         }
 
-    messages = build_messages(settings, question, retrieved_chunks, history=history)
+    messages = build_messages(settings, question, retrieved_chunks, history=history, compiled_prompt=compiled_prompt)
     answer = model_client.chat(messages)  # type: ignore[attr-defined]
     return {"answer": answer, "sources": sources, "mode": "model"}
 
@@ -33,7 +35,18 @@ def build_messages(
     question: str,
     retrieved_chunks: list[dict[str, object]],
     history: list[dict[str, object]] | None = None,
+    compiled_prompt: CompiledPrompt | None = None,
 ) -> list[dict[str, str]]:
+    if compiled_prompt is not None:
+        stable = "\n\n".join(block.text for block in compiled_prompt.blocks if block.type == "stable")
+        user_content = "\n\n".join(block.text for block in compiled_prompt.blocks if block.type != "stable")
+        messages = [
+            {"role": "system", "content": f"{stable}\n\n{LOCAL_RUNTIME_INSTRUCTION}".strip()},
+        ]
+        messages.extend(_sanitize_history(history or []))
+        messages.append({"role": "user", "content": user_content})
+        return messages
+
     system_prompt = settings.prompt_path.read_text(encoding="utf-8") if settings.prompt_path.exists() else ""
     context = "\n\n".join(
         f"[{index + 1}] {chunk.get('title', '')}\n来源: {chunk.get('source', '')}\n{chunk.get('content', '')}"

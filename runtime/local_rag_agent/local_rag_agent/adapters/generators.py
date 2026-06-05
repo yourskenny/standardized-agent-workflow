@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..agent import answer_question
 from ..config import Settings
 from ..ports import GeneratedAnswer, GeneratorPort
+from ..prompt.compiler import compile_prompt
 from ..providers.resolver import ModelProviderResolver
 
 
@@ -18,13 +19,23 @@ class OpenAICompatibleGenerator(GeneratorPort):
         resolution = ModelProviderResolver.from_settings(settings).resolve(model_client=model_client)
         if resolution.client is None and resolution.fallback != "extractive":
             raise ValueError(f"Unsupported generation fallback: {resolution.fallback}")
-        result = answer_question(settings, question, retrieved_chunks, resolution.client, history=history)
+        compiled_prompt = compile_prompt(settings, question, retrieved_chunks, history=history)
+        result = answer_question(
+            settings,
+            question,
+            retrieved_chunks,
+            resolution.client,
+            history=history,
+            compiled_prompt=compiled_prompt if resolution.client is not None else None,
+        )
         sources = result.get("sources", [])
+        metadata = resolution.trace_metadata()
+        metadata["prompt_blocks"] = compiled_prompt.trace_blocks()
         return GeneratedAnswer(
             answer=str(result.get("answer", "")),
             mode=str(result.get("mode", "")),
             sources=sources if isinstance(sources, list) else [],
-            metadata=resolution.trace_metadata(),
+            metadata=metadata,
         )
 
 
