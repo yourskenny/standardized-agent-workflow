@@ -31,6 +31,7 @@ class Settings:
     policy_config_path: Path | None = None
     tool_config_path: Path | None = None
     ui_config_path: Path | None = None
+    model_config_path: Path | None = None
     default_intent: str = "knowledge_qa"
     default_workflow: str = "rag_qa"
     allow_workflow_fallback: bool = False
@@ -87,6 +88,7 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
             "policy_config",
             "tool_config",
             "ui_config",
+            "model_config",
             "allow_workflow_fallback",
         },
         config_file,
@@ -137,6 +139,9 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
     ui_config_path = None
     if runtime.get("ui_config"):
         ui_config_path = _resolve_inside(root, runtime["ui_config"])
+    model_config_path = None
+    if runtime.get("model_config"):
+        model_config_path = _resolve_inside(root, runtime["model_config"])
 
     return Settings(
         project_root=root,
@@ -157,6 +162,7 @@ def load_settings(project_root: Path, config_path: Path) -> Settings:
         policy_config_path=policy_config_path,
         tool_config_path=tool_config_path,
         ui_config_path=ui_config_path,
+        model_config_path=model_config_path,
         default_intent=str(runtime.get("default_intent", "knowledge_qa")),
         default_workflow=str(runtime.get("default_workflow", "rag_qa")),
         allow_workflow_fallback=bool(runtime.get("allow_workflow_fallback", False)),

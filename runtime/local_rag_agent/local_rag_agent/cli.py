@@ -222,6 +222,7 @@ def _runtime_config_status(settings: Settings) -> dict[str, dict[str, object]]:
         "workflow_config": settings.workflow_config_path,
         "policy_config": settings.policy_config_path,
         "tool_config": settings.tool_config_path,
+        "model_config": settings.model_config_path,
     }
     return {
         name: {

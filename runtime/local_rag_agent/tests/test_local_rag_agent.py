@@ -143,6 +143,7 @@ class ConfigAndManifestTests(unittest.TestCase):
             (root / "agent" / "policies.toml").write_text('[[policies]]\nid = "source_required"\n', encoding="utf-8")
             (root / "agent" / "tools.toml").write_text('[[tools]]\nid = "disabled_search"\n', encoding="utf-8")
             (root / "agent" / "ui.toml").write_text('title = "Project Assistant"\n', encoding="utf-8")
+            (root / "agent" / "models.toml").write_text('[[models]]\nid = "chat"\n', encoding="utf-8")
             (root / "knowledge_base").mkdir()
             (root / "manifest.md").write_text("- `knowledge_base/`\n", encoding="utf-8")
             config_path = root / "agent.toml"
@@ -158,7 +159,8 @@ class ConfigAndManifestTests(unittest.TestCase):
                 'workflow_config = "agent/workflows.toml"\n'
                 'policy_config = "agent/policies.toml"\n'
                 'tool_config = "agent/tools.toml"\n'
-                'ui_config = "agent/ui.toml"\n',
+                'ui_config = "agent/ui.toml"\n'
+                'model_config = "agent/models.toml"\n',
                 encoding="utf-8",
             )
 
@@ -170,6 +172,7 @@ class ConfigAndManifestTests(unittest.TestCase):
             self.assertEqual(settings.policy_config_path, root.resolve() / "agent" / "policies.toml")
             self.assertEqual(settings.tool_config_path, root.resolve() / "agent" / "tools.toml")
             self.assertEqual(settings.ui_config_path, root.resolve() / "agent" / "ui.toml")
+            self.assertEqual(settings.model_config_path, root.resolve() / "agent" / "models.toml")
 
     def test_load_config_records_schema_version_and_warns_unknown_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2356,6 +2359,172 @@ class ComponentPortTests(unittest.TestCase):
 
             self.assertEqual(answer.mode, "extractive")
             self.assertIn("fallback answer", answer.answer)
+
+    def test_load_models_reads_model_provider_contract(self):
+        from local_rag_agent.models import load_models
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "models.toml"
+            path.write_text(
+                'schema_version = "models.v1"\n'
+                '[[models]]\n'
+                'id = "primary"\n'
+                'provider = "openai_compatible"\n'
+                'model = "gpt-4.1-mini"\n'
+                'base_url = "https://models.example/v1"\n'
+                'api_key_env = "LOCAL_RAG_TEST_MODEL_KEY"\n'
+                'fallback = "extractive"\n',
+                encoding="utf-8",
+            )
+
+            models = load_models(path)
+
+            self.assertEqual(models[0].id, "primary")
+            self.assertEqual(models[0].provider, "openai_compatible")
+            self.assertEqual(models[0].model, "gpt-4.1-mini")
+            self.assertEqual(models[0].base_url, "https://models.example/v1")
+            self.assertEqual(models[0].api_key_env, "LOCAL_RAG_TEST_MODEL_KEY")
+            self.assertEqual(models[0].fallback, "extractive")
+            self.assertEqual(models[0].schema_version, "models.v1")
+
+    def test_generator_provider_falls_back_to_extractive_when_model_api_key_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            models_path = root / "models.toml"
+            models_path.write_text(
+                'schema_version = "models.v1"\n'
+                '[[models]]\n'
+                'id = "primary"\n'
+                'provider = "openai_compatible"\n'
+                'model = "gpt-4.1-mini"\n'
+                'base_url = "https://models.example/v1"\n'
+                'api_key_env = "LOCAL_RAG_TEST_MISSING_KEY"\n'
+                'fallback = "extractive"\n',
+                encoding="utf-8",
+            )
+            os.environ.pop("LOCAL_RAG_TEST_MISSING_KEY", None)
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                generation_provider="openai_compatible",
+                generation_fallback="extractive",
+                model_config_path=models_path,
+            )
+            chunks = [{"chunk_id": "facts.md#0", "source": "facts.md", "content": "Answer: no key fallback."}]
+
+            answer = GeneratorProvider.from_settings(settings).generate(settings, "question?", chunks, model_client=None)
+
+            self.assertEqual(answer.mode, "extractive")
+            self.assertIn("no key fallback", answer.answer)
+            self.assertEqual(answer.metadata["provider"], "openai_compatible")
+            self.assertEqual(answer.metadata["model"], "gpt-4.1-mini")
+            self.assertEqual(answer.metadata["api_key_env"], "LOCAL_RAG_TEST_MISSING_KEY")
+            self.assertEqual(answer.metadata["credential_status"], "missing")
+
+    def test_generator_provider_keeps_no_client_path_extractive_when_model_key_is_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            models_path = root / "models.toml"
+            models_path.write_text(
+                'schema_version = "models.v1"\n'
+                '[[models]]\n'
+                'id = "primary"\n'
+                'provider = "openai_compatible"\n'
+                'model = "gpt-4.1-mini"\n'
+                'base_url = "http://127.0.0.1:9/v1"\n'
+                'api_key_env = "LOCAL_RAG_TEST_MODEL_KEY"\n'
+                'fallback = "extractive"\n',
+                encoding="utf-8",
+            )
+            old_secret = os.environ.get("LOCAL_RAG_TEST_MODEL_KEY")
+            os.environ["LOCAL_RAG_TEST_MODEL_KEY"] = "super-secret-token"
+            def restore_secret():
+                if old_secret is None:
+                    os.environ.pop("LOCAL_RAG_TEST_MODEL_KEY", None)
+                else:
+                    os.environ["LOCAL_RAG_TEST_MODEL_KEY"] = old_secret
+
+            self.addCleanup(restore_secret)
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                generation_provider="openai_compatible",
+                generation_fallback="extractive",
+                model_config_path=models_path,
+            )
+            chunks = [{"chunk_id": "facts.md#0", "source": "facts.md", "content": "Answer: explicit client only."}]
+
+            answer = GeneratorProvider.from_settings(settings).generate(settings, "question?", chunks, model_client=None)
+
+            self.assertEqual(answer.mode, "extractive")
+            self.assertIn("explicit client only", answer.answer)
+            self.assertEqual(answer.metadata["credential_status"], "present")
+
+    def test_runtime_trace_records_model_resolution_without_secret_values(self):
+        class FakeModelClient:
+            def chat(self, messages):
+                return "model answer"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            prompt = root / "prompt.md"
+            prompt.write_text("system prompt", encoding="utf-8")
+            models_path = root / "models.toml"
+            models_path.write_text(
+                'schema_version = "models.v1"\n'
+                '[[models]]\n'
+                'id = "primary"\n'
+                'provider = "openai_compatible"\n'
+                'model = "gpt-4.1-mini"\n'
+                'base_url = "https://models.example/v1"\n'
+                'api_key_env = "LOCAL_RAG_TEST_MODEL_KEY"\n'
+                'fallback = "extractive"\n',
+                encoding="utf-8",
+            )
+            old_secret = os.environ.get("LOCAL_RAG_TEST_MODEL_KEY")
+            os.environ["LOCAL_RAG_TEST_MODEL_KEY"] = "super-secret-token"
+            def restore_secret():
+                if old_secret is None:
+                    os.environ.pop("LOCAL_RAG_TEST_MODEL_KEY", None)
+                else:
+                    os.environ["LOCAL_RAG_TEST_MODEL_KEY"] = old_secret
+
+            self.addCleanup(restore_secret)
+            settings = Settings(
+                project_root=root,
+                prompt_path=prompt,
+                manifest_path=root / "manifest.md",
+                knowledge_root=root / "knowledge_base",
+                index_path=root / ".local_rag_agent" / "index.json",
+                generation_provider="openai_compatible",
+                generation_fallback="extractive",
+                model_config_path=models_path,
+            )
+            settings.index_path.parent.mkdir()
+            settings.index_path.write_text(
+                '{"chunks":[{"chunk_id":"facts.md#0","source":"facts.md","content":"Answer: source answer."}]}',
+                encoding="utf-8",
+            )
+
+            response = AgentRuntime(settings, model_client=FakeModelClient()).run(AgentRequest("source answer"))
+
+            payload = response.to_dict()
+            generate_step = next(step for step in payload["trace"]["steps"] if step["name"] == "generate_answer")
+            self.assertEqual(generate_step["detail"]["provider"], "openai_compatible")
+            self.assertEqual(generate_step["detail"]["model"], "gpt-4.1-mini")
+            self.assertEqual(generate_step["detail"]["base_url"], "https://models.example/v1")
+            self.assertEqual(generate_step["detail"]["api_key_env"], "LOCAL_RAG_TEST_MODEL_KEY")
+            self.assertNotIn("super-secret-token", json.dumps(payload, ensure_ascii=False))
 
 
 class WorkflowPipelineTests(unittest.TestCase):

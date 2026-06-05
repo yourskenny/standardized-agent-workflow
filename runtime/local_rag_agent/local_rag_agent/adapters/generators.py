@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..agent import answer_question
 from ..config import Settings
 from ..ports import GeneratedAnswer, GeneratorPort
+from ..providers.resolver import ModelProviderResolver
 
 
 class OpenAICompatibleGenerator(GeneratorPort):
@@ -14,14 +15,16 @@ class OpenAICompatibleGenerator(GeneratorPort):
         model_client: object | None = None,
         history: list[dict[str, object]] | None = None,
     ) -> GeneratedAnswer:
-        if model_client is None and settings.generation_fallback != "extractive":
-            raise ValueError(f"Unsupported generation fallback: {settings.generation_fallback}")
-        result = answer_question(settings, question, retrieved_chunks, model_client, history=history)
+        resolution = ModelProviderResolver.from_settings(settings).resolve(model_client=model_client)
+        if resolution.client is None and resolution.fallback != "extractive":
+            raise ValueError(f"Unsupported generation fallback: {resolution.fallback}")
+        result = answer_question(settings, question, retrieved_chunks, resolution.client, history=history)
         sources = result.get("sources", [])
         return GeneratedAnswer(
             answer=str(result.get("answer", "")),
             mode=str(result.get("mode", "")),
             sources=sources if isinstance(sources, list) else [],
+            metadata=resolution.trace_metadata(),
         )
 
 
@@ -40,6 +43,14 @@ class ExtractiveGenerator(GeneratorPort):
             answer=str(result.get("answer", "")),
             mode=str(result.get("mode", "")),
             sources=sources if isinstance(sources, list) else [],
+            metadata={
+                "provider": "extractive",
+                "model": "",
+                "base_url": "",
+                "api_key_env": "",
+                "fallback": "extractive",
+                "credential_status": "not_required",
+            },
         )
 
 

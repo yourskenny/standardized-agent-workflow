@@ -122,10 +122,9 @@ def generate_answer(context: WorkflowContext) -> None:
         history=context.request.history,
     )
     context.result = {"answer": generated.answer, "mode": generated.mode, "sources": generated.sources}
-    context.trace.add_step(
-        "generate_answer",
-        {"provider": context.settings.generation_provider, "mode": generated.mode},
-    )
+    detail = {"provider": context.settings.generation_provider, "mode": generated.mode}
+    detail.update(generated.metadata)
+    context.trace.add_step("generate_answer", detail)
 
 
 def call_first_tool(context: WorkflowContext) -> None:

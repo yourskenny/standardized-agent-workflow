@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from .config import Settings
@@ -49,6 +49,7 @@ class GeneratedAnswer:
     answer: str
     mode: str
     sources: list[dict[str, object]]
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class RetrieverProvider:

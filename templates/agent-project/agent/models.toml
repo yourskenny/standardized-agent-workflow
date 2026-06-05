@@ -1,0 +1,10 @@
+schema_version = "models.v1"
+
+[[models]]
+id = "default_openai_compatible"
+provider = "openai_compatible"
+model = "gpt-4.1-mini"
+base_url = "https://api.openai.com/v1"
+api_key_env = "LOCAL_AGENT_API_KEY"
+fallback = "extractive"
+timeout_seconds = 60

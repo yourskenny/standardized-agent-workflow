@@ -14,6 +14,7 @@ workflow_config = "agent/workflows.toml"
 policy_config = "agent/policies.toml"
 tool_config = "agent/tools.toml"
 ui_config = "agent/ui.toml"
+model_config = "agent/models.toml"
 
 [retrieval]
 provider = "lexical"
