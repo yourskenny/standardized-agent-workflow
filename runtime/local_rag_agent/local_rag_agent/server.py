@@ -11,10 +11,9 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from .cli import chat_question
 from .config import Settings
-from .runtime import AgentRuntime
-from .types import AgentRequest
+from .interfaces.http.errors import error_payload
+from .interfaces.http.routes import chat_payload, validate_payload
 from .ui import UiConfig, load_ui_config
-from .validator import validate_project_config, validate_project_contract
 
 SecurityHook = Callable[[BaseHTTPRequestHandler, Settings], bool]
 
@@ -63,7 +62,7 @@ def make_handler(
             if parsed.path == "/api/v1/validate":
                 if not self._guard_api_request():
                     return
-                self._send_json(_validate_payload(settings))
+                self._send_json(validate_payload(settings))
                 return
             if parsed.path in {"/chatbot", "/chatbot/"}:
                 self._send_html(render_chat_page(ui=ui))
@@ -117,7 +116,7 @@ def make_handler(
                 self.send_header("Vary", "Origin")
 
         def _send_error_json(self, status: int, code: str, message: str) -> None:
-            self._send_json({"error": {"code": code, "message": message}}, status=status)
+            self._send_json(error_payload(code, message), status=status)
 
         def _read_json_body(self) -> dict[str, object]:
             length = int(self.headers.get("Content-Length", "0"))
@@ -153,13 +152,11 @@ def make_handler(
             if not isinstance(metadata, dict):
                 metadata = {}
             try:
-                response = AgentRuntime(settings).run(
-                    AgentRequest(message=message, history=history, metadata=metadata)
-                )
+                payload = chat_payload(settings, message, history=history, metadata=metadata)
             except Exception as error:  # pragma: no cover - integration failures depend on project config
                 self._send_error_json(500, "RUNTIME_ERROR", str(error))
                 return
-            self._send_json(response.to_dict())
+            self._send_json(payload)
 
         def _guard_api_request(self) -> bool:
             if hooks.authenticate is not None:
@@ -210,13 +207,6 @@ def make_handler(
             self.wfile.write(body)
 
     return Handler
-
-
-def _validate_payload(settings: Settings) -> dict[str, object]:
-    if settings.config_path is not None:
-        return validate_project_config(settings.project_root, settings.config_path).to_dict()
-    return validate_project_contract(settings).to_dict()
-
 
 def render_chat_page(title: str | None = None, ui: UiConfig | None = None) -> str:
     ui = ui or UiConfig(title=title or "Local Agent")

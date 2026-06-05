@@ -4109,6 +4109,25 @@ class RegressionTests(unittest.TestCase):
 
 
 class ServerPageTests(unittest.TestCase):
+    def test_http_interface_split_exports_compatible_entrypoints(self):
+        from local_rag_agent.interfaces.http import server as http_server
+        from local_rag_agent.interfaces.http.errors import error_payload
+        from local_rag_agent.interfaces.http.routes import validate_payload
+        from local_rag_agent.services.runtime_service import RuntimeService
+
+        settings = Settings(
+            project_root=Path.cwd(),
+            prompt_path=Path.cwd() / "prompt.md",
+            manifest_path=Path.cwd() / "manifest.md",
+            knowledge_root=Path.cwd() / "knowledge_base",
+            index_path=Path.cwd() / ".local_rag_agent" / "index.json",
+        )
+
+        self.assertIs(http_server.make_handler, make_handler)
+        self.assertEqual(error_payload("BAD_REQUEST", "bad"), {"error": {"code": "BAD_REQUEST", "message": "bad"}})
+        self.assertTrue(validate_payload(settings)["ok"])
+        self.assertIsInstance(RuntimeService(settings), RuntimeService)
+
     def test_http_health_version_and_validate_endpoints_return_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
