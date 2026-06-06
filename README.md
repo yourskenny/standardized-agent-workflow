@@ -64,6 +64,7 @@
 8. [docs/07-pre-ingestion-abstraction-workflow.md](docs/07-pre-ingestion-abstraction-workflow.md)
 9. [docs/08-local-rag-reference-implementation.md](docs/08-local-rag-reference-implementation.md)
 10. [docs/09-general-agent-runtime-architecture.md](docs/09-general-agent-runtime-architecture.md)
+11. [docs/2026-06-06-general-agent-project-report.md](docs/2026-06-06-general-agent-project-report.md)
 
 ## 通用自建智能体运行时
 
