@@ -1,5 +1,24 @@
 # Pre-Ingestion Workspace
 
+This directory is for raw or intermediate material that is useful to the project
+but not yet safe or clear enough to expose to retrieval, prompts, UI, or model
+context.
+
+## Trusted Build Rule
+
+Move material from `_pre_ingestion/` to the official knowledge base only after a
+project-specific build or review step has:
+
+1. inventoried the source;
+2. removed or downgraded sensitive fields;
+3. transformed raw records into reviewed facts, metrics, summaries, or chunks;
+4. written a build manifest that explains the transformation;
+5. updated regression questions for the new behavior.
+
+See `knowledge_base/_templates/build-artifact-contract.md` and
+`knowledge_base/_manifests/build-manifest.example.json` for the generic contract.
+
+
 本目录用于处理有价值但不适合直接进入用户可见知识库的资料。
 
 ## 用途

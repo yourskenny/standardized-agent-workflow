@@ -1,0 +1,35 @@
+{
+  "name": "example-agent-build",
+  "version": "2026-07-01",
+  "sources": [
+    {
+      "id": "source-1",
+      "kind": "spreadsheet",
+      "location": "data/raw/example.xlsx",
+      "rows": 120,
+      "fields": ["item_id", "category_id", "amount", "region"],
+      "private_fields_excluded": ["customer_name", "phone", "full_address"]
+    }
+  ],
+  "derived_artifacts": [
+    {
+      "path": "data/processed/example_metrics.json",
+      "kind": "metrics",
+      "description": "Aggregated metrics derived from raw records.",
+      "record_count": 12
+    },
+    {
+      "path": "knowledge_base/generated/example_chunks.json",
+      "kind": "knowledge_chunks",
+      "description": "Evidence chunks exposed to retrieval.",
+      "record_count": 8
+    }
+  ],
+  "privacy": {
+    "policy": "aggregate-before-retrieval",
+    "excluded_fields": ["customer_name", "phone", "full_address"],
+    "aggregation_level": "category-or-region",
+    "notes": "Only aggregated, reviewed artifacts should be listed in the upload manifest."
+  },
+  "notes": "This is a template. Replace paths and fields for each project."
+}

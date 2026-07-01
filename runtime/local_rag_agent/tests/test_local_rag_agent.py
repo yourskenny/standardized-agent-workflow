@@ -12,6 +12,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from local_rag_agent.agent import answer_question, build_extractive_answer, build_messages
+from local_rag_agent.build_assets import BuildManifest, BuildSource, DerivedArtifact, PrivacyControl
 from local_rag_agent.chunking import chunk_markdown
 from local_rag_agent.cli import (
     build_retrieval_query,
@@ -33,7 +34,7 @@ from local_rag_agent.retrieval import rank_chunks
 from local_rag_agent.runtime import AgentRuntime
 from local_rag_agent.server import ServerHooks, make_handler, render_chat_page, render_workspace_home
 from local_rag_agent.tools import ToolProvider, load_tools
-from local_rag_agent.types import AgentRequest, AgentResponse, AgentTrace, SourceReference
+from local_rag_agent.types import AgentRequest, AgentResponse, AgentTrace, GenerationRecord, SourceReference
 from local_rag_agent.ui import load_ui_config
 from local_rag_agent.validator import (
     ValidationIssue,
@@ -60,6 +61,49 @@ def load_intents_from_inline(text: str):
         path = Path(tmp) / "intents.toml"
         path.write_text(text, encoding="utf-8")
         return load_intents(path)
+
+
+class BuildAssetContractTests(unittest.TestCase):
+    def test_build_manifest_round_trips_privacy_and_artifact_summary(self):
+        manifest = BuildManifest(
+            name="example-agent-build",
+            version="2026-07-01",
+            sources=[
+                BuildSource(
+                    id="orders",
+                    kind="spreadsheet",
+                    location="data/raw/orders.xlsx",
+                    rows=20,
+                    fields=["order_id", "amount", "region"],
+                    private_fields_excluded=["customer_name"],
+                )
+            ],
+            derived_artifacts=[
+                DerivedArtifact(
+                    path="data/processed/metrics.json",
+                    kind="metrics",
+                    description="Aggregated metrics.",
+                    record_count=4,
+                )
+            ],
+            privacy=PrivacyControl(
+                policy="aggregate-before-retrieval",
+                excluded_fields=["customer_name", "phone"],
+                aggregation_level="region",
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "build-manifest.json"
+            manifest.write_json(path)
+            loaded = BuildManifest.read_json(path)
+
+        self.assertEqual(loaded.sources[0].private_fields_excluded, ["customer_name"])
+        self.assertEqual(loaded.derived_artifacts[0].kind, "metrics")
+        self.assertEqual(loaded.privacy.aggregation_level, "region")
+        self.assertEqual(loaded.audit_summary()["source_count"], 1)
+        self.assertEqual(loaded.audit_summary()["derived_artifact_count"], 1)
+        self.assertEqual(loaded.audit_summary()["excluded_field_count"], 2)
 
 
 class ConfigAndManifestTests(unittest.TestCase):
@@ -313,6 +357,17 @@ class ConfigAndManifestTests(unittest.TestCase):
         self.assertTrue(any(tool.id == "example_disabled_tool" for tool in tools))
         self.assertEqual(tools[0].adapter, "disabled")
         self.assertEqual(ui.title, "Local Agent")
+
+    def test_template_agent_project_includes_build_artifact_contract(self):
+        manifest = TEMPLATE_ROOT / "knowledge_base" / "_manifests" / "build-manifest.example.json"
+        contract = TEMPLATE_ROOT / "knowledge_base" / "_templates" / "build-artifact-contract.md"
+        loaded = BuildManifest.read_json(manifest)
+
+        self.assertTrue(manifest.exists())
+        self.assertTrue(contract.exists())
+        self.assertEqual(loaded.privacy.policy, "aggregate-before-retrieval")
+        self.assertIn("LLM context", contract.read_text(encoding="utf-8"))
+
 
     def test_template_v2_project_validate_ingest_chat_and_regression_smoke(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1179,6 +1234,31 @@ class RuntimeTypeTests(unittest.TestCase):
         self.assertEqual(payload["workflow"], "rag_qa")
         self.assertEqual(payload["sources"][0]["source"], "course.md")
         self.assertEqual(payload["trace"]["steps"][0]["name"], "retrieve")
+
+    def test_agent_response_serializes_generation_boundary(self):
+        response = AgentResponse(
+            answer="Answer from reviewed sources.",
+            mode="model",
+            intent="knowledge_qa",
+            workflow="rag_qa",
+            generation=GenerationRecord(
+                mode="model",
+                provider="openai_compatible",
+                model="example-model",
+                input_blocks=[{"source": "facts.md", "type": "context", "token_count": 12}],
+                source_count=1,
+                credential_status="configured",
+                fallback="extractive",
+            ),
+        )
+
+        payload = response.to_dict()
+
+        self.assertEqual(payload["answer"], "Answer from reviewed sources.")
+        self.assertEqual(payload["generation"]["mode"], "model")
+        self.assertEqual(payload["generation"]["provider"], "openai_compatible")
+        self.assertEqual(payload["generation"]["input_blocks"][0]["type"], "context")
+        self.assertEqual(payload["generation"]["source_count"], 1)
 
     def test_agent_request_keeps_history_and_metadata_defaults(self):
         request = AgentRequest(message="那地点呢？")
@@ -3911,6 +3991,11 @@ class RegressionTests(unittest.TestCase):
                     "intent": "knowledge_qa",
                     "workflow": "rag_qa",
                     "trace": {"steps": [{"name": "retrieve", "detail": {"source_count": 1}}]},
+                    "generation": {
+                        "mode": "extractive",
+                        "provider": "extractive",
+                        "source_count": 1,
+                    },
                 },
             )
 
@@ -3920,6 +4005,7 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(record["intent"], "knowledge_qa")
             self.assertEqual(record["workflow"], "rag_qa")
             self.assertEqual(record["trace"]["steps"][0]["name"], "retrieve")
+            self.assertEqual(record["generation"]["mode"], "extractive")
 
     def test_summarize_regression_report_flags_missing_sources_and_counts_trace_signals(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3933,6 +4019,7 @@ class RegressionTests(unittest.TestCase):
                     "mode": "extractive",
                     "intent": "knowledge_qa",
                     "workflow": "rag_qa",
+                    "generation": {"mode": "extractive", "provider": "extractive", "source_count": 1},
                     "trace": {
                         "config_versions": {"runtime": "runtime.v1"},
                         "steps": [
@@ -3972,6 +4059,8 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(summary["missing_source_count"], 1)
             self.assertEqual(summary["policy_trace_count"], 2)
             self.assertEqual(summary["tool_trace_count"], 1)
+            self.assertEqual(summary["generation_modes"]["extractive"], 1)
+            self.assertEqual(summary["missing_generation_count"], 1)
             self.assertEqual(summary["failures"][0]["id"], "C02")
 
     def test_summarize_regression_report_fails_missing_release_trace_contracts(self):

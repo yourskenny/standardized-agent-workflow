@@ -38,6 +38,7 @@ def run_regression(question_file: Path, output_file: Path, answer_fn: Callable[[
                 "intent": response.get("intent", ""),
                 "workflow": response.get("workflow", ""),
                 "trace": response.get("trace", {}),
+                "generation": response.get("generation", {}),
             }
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             count += 1
@@ -53,6 +54,8 @@ def summarize_regression_report(path: Path) -> dict[str, object]:
     modes: dict[str, int] = {}
     intents: dict[str, int] = {}
     workflows: dict[str, int] = {}
+    generation_modes: dict[str, int] = {}
+    missing_generation_count = 0
 
     for record in records:
         mode = str(record.get("mode", ""))
@@ -61,6 +64,12 @@ def summarize_regression_report(path: Path) -> dict[str, object]:
         modes[mode] = modes.get(mode, 0) + 1
         intents[intent] = intents.get(intent, 0) + 1
         workflows[workflow] = workflows.get(workflow, 0) + 1
+        generation = record.get("generation", {})
+        if isinstance(generation, dict) and generation:
+            generation_mode = str(generation.get("mode", ""))
+            generation_modes[generation_mode] = generation_modes.get(generation_mode, 0) + 1
+        else:
+            missing_generation_count += 1
         trace = record.get("trace", {})
         steps = trace.get("steps", []) if isinstance(trace, dict) else []
         step_names = [str(step.get("name", "")) for step in steps if isinstance(step, dict)]
@@ -96,6 +105,8 @@ def summarize_regression_report(path: Path) -> dict[str, object]:
         "modes": modes,
         "intents": intents,
         "workflows": workflows,
+        "generation_modes": generation_modes,
+        "missing_generation_count": missing_generation_count,
         "failures": failures,
     }
 

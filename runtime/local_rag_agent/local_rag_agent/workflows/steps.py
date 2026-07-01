@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ..ports import GeneratorProvider, RetrieverProvider
 from ..tool_runtime import ToolRuntime
-from ..types import AgentResponse, SourceReference
+from ..types import AgentResponse, GenerationRecord, SourceReference
 from .runner import WorkflowContext, WorkflowStep
 
 
@@ -109,6 +109,7 @@ def build_policy_response(context: WorkflowContext) -> None:
         workflow=context.intent_decision.intent.workflow,
         sources=[],
         trace=context.trace,
+        generation=GenerationRecord(mode=mode, provider="policy", source_count=0),
     )
 
 
@@ -121,7 +122,17 @@ def generate_answer(context: WorkflowContext) -> None:
         model_client=context.model_client,
         history=context.request.history,
     )
-    context.result = {"answer": generated.answer, "mode": generated.mode, "sources": generated.sources}
+    generation = dict(generated.metadata)
+    if "prompt_blocks" in generation and "input_blocks" not in generation:
+        generation["input_blocks"] = generation.pop("prompt_blocks")
+    generation.setdefault("mode", generated.mode)
+    generation.setdefault("source_count", len(generated.sources))
+    context.result = {
+        "answer": generated.answer,
+        "mode": generated.mode,
+        "sources": generated.sources,
+        "generation": generation,
+    }
     detail = {"provider": context.settings.generation_provider, "mode": generated.mode}
     detail.update(generated.metadata)
     context.trace.add_step("generate_answer", detail)
@@ -244,6 +255,11 @@ def build_tool_response(context: WorkflowContext) -> None:
         workflow=context.intent_decision.intent.workflow,
         sources=[],
         trace=context.trace,
+        generation=GenerationRecord(
+            mode="tool" if result.get("ok") else "tool_error",
+            provider="tool",
+            source_count=0,
+        ),
         metadata={"tool_results": context.tool_results},
     )
 
@@ -261,6 +277,9 @@ def build_response(context: WorkflowContext) -> None:
         workflow=context.intent_decision.intent.workflow,
         sources=sources,
         trace=context.trace,
+        generation=GenerationRecord.from_mapping(
+            context.result.get("generation", {}) if isinstance(context.result.get("generation"), dict) else {}
+        ),
     )
 
 
@@ -279,6 +298,11 @@ def build_retrieval_debug_response(context: WorkflowContext) -> None:
         workflow=context.intent_decision.intent.workflow,
         sources=[SourceReference.from_mapping(chunk) for chunk in context.retrieved_chunks],
         trace=context.trace,
+        generation=GenerationRecord(
+            mode="not_called",
+            provider="retrieval_debug",
+            source_count=len(context.retrieved_chunks),
+        ),
     )
 
 
@@ -294,4 +318,5 @@ def build_refusal_response(context: WorkflowContext) -> None:
         workflow=context.intent_decision.intent.workflow,
         sources=[],
         trace=context.trace,
+        generation=GenerationRecord(mode="refusal", provider="policy", source_count=0),
     )
